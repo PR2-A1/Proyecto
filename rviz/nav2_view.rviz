@@ -1,0 +1,121 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+  - Class: nav2_rviz_plugins/Navigation 2
+    Name: Navigation 2
+Visualization Manager:
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Value: true
+      Cell Size: 1
+      Line Style:
+        Value: Lines
+      Normal Cell Count: 0
+      Plane: XY
+      Plane Cell Count: 50
+      Reference Frame: <Fixed Frame>
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Value: true
+      Description Source: Topic
+      Description Topic:
+        Value: /robot_description
+      Visual Enabled: true
+      Collision Enabled: false
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Value: true
+      Show Axes: true
+      Show Names: true
+      Frame Timeout: 15
+    - Class: rviz_default_plugins/Map
+      Name: Global Map
+      Value: true
+      Topic:
+        Value: /map
+      Color Scheme: map
+      Draw Behind: false
+    - Class: rviz_default_plugins/Map
+      Name: Local Costmap
+      Value: true
+      Topic:
+        Value: /local_costmap/costmap
+      Color Scheme: costmap
+      Draw Behind: false
+    - Class: rviz_default_plugins/Map
+      Name: Global Costmap
+      Value: false
+      Topic:
+        Value: /global_costmap/costmap
+      Color Scheme: costmap
+      Draw Behind: false
+    - Class: rviz_default_plugins/LaserScan
+      Name: Front Laser
+      Value: true
+      Topic:
+        Value: /f_scan
+      Size (m): 0.03
+      Color: 255; 0; 0
+      Style: Flat Squares
+    - Class: rviz_default_plugins/LaserScan
+      Name: Back Laser
+      Value: true
+      Topic:
+        Value: /b_scan
+      Size (m): 0.03
+      Color: 0; 0; 255
+      Style: Flat Squares
+    - Class: rviz_default_plugins/Path
+      Name: Global Plan
+      Value: true
+      Topic:
+        Value: /plan
+      Line Style: Lines
+      Color: 0; 255; 0
+    - Class: rviz_default_plugins/Path
+      Name: Local Plan
+      Value: true
+      Topic:
+        Value: /local_plan
+      Line Style: Lines
+      Color: 255; 255; 0
+    - Class: rviz_default_plugins/Pose
+      Name: Goal Pose
+      Value: true
+      Topic:
+        Value: /goal_pose
+      Shape: Arrow
+      Color: 255; 0; 255
+    - Class: nav2_rviz_plugins/ParticleCloud
+      Name: AMCL Particles
+      Value: true
+      Topic:
+        Value: /particle_cloud
+      Max Arrow Length: 0.03
+      Min Arrow Length: 0.01
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic: /initialpose
+    - Class: nav2_rviz_plugins/GoalTool
+    - Class: rviz_default_plugins/Measure
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: TopDownOrtho
+      Near: 0.01
+      X: 0
+      Y: 0
+      Scale: 20
+Window Geometry:
+  Width: 1200
+  Height: 800
+  Displays:
+    collapsed: false
