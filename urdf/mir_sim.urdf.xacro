@@ -1,10 +1,6 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://ros.org/wiki/xacro"
        name="mir">
-  <!--
-    Simulation variant: base MiR URDF + Gazebo Harmonic plugins.
-    Used by simulation.launch.py; the real-robot bringup uses mir.urdf.xacro instead.
-  -->
 
   <!-- Base robot (no Gazebo plugins) -->
   <xacro:include filename="$(find mir_nav2_robodk)/urdf/include/mir_v1.urdf.xacro" />

@@ -1,7 +1,7 @@
 """
 Simulation launch file: Gazebo Harmonic + MiR robot + Nav2.
 
-Starts Gazebo with the warehouse world (can be changed for 
+Starts Gazebo with the warehouse world (will be changed for 
 the final map), spawns the MiR, bridges Gazebo topics to 
 ROS 2, and launches the Nav2 stack.
 
@@ -43,7 +43,7 @@ def generate_launch_description():
         PathJoinSubstitution([pkg_share, os.pardir]),
     )
 
-    # --- Launch arguments ---
+    # Launch arguments
     mir_type_arg = DeclareLaunchArgument(
         'mir_type', default_value='mir_100',
         description='MiR variant: mir_100 or mir_250')
@@ -69,7 +69,7 @@ def generate_launch_description():
     spawn_y_arg = DeclareLaunchArgument('spawn_y', default_value='0.0')
     spawn_yaw_arg = DeclareLaunchArgument('spawn_yaw', default_value='0.0')
 
-    # --- Robot description ---
+    # Robot description
     xacro_file = PathJoinSubstitution([pkg_share, 'urdf', 'mir_sim.urdf.xacro'])
     robot_description = Command([
         'xacro ', xacro_file,
@@ -86,7 +86,7 @@ def generate_launch_description():
         output='screen',
     )
 
-    # --- Gazebo Harmonic ---
+    # Gazebo Harmonic
     gz_sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([ros_gz_sim_share, 'launch', 'gz_sim.launch.py'])
@@ -110,7 +110,7 @@ def generate_launch_description():
         output='screen',
     )
 
-    # --- ros_gz_bridge ---
+    # ros_gz_bridge
     gz_bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
@@ -138,7 +138,7 @@ def generate_launch_description():
         'use_composition': 'False',
     }
 
-    # --- Nav2: SLAM mode ---
+    # Nav2: SLAM mode
     nav2_slam = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([nav2_bringup_share, 'launch', 'slam_launch.py'])
@@ -155,8 +155,7 @@ def generate_launch_description():
         launch_arguments=nav2_common.items(),
     )
 
-    # --- Nav2: localization mode ---
-    # yaml_filename is set in nav2_params.yaml, so no 'map' arg needed.
+    # Nav2: localization mode.
     nav2_loc = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([nav2_bringup_share, 'launch', 'localization_launch.py'])
@@ -173,7 +172,7 @@ def generate_launch_description():
         launch_arguments=nav2_common.items(),
     )
 
-    # --- RViz ---
+    # RViz
     rviz_node = Node(
         condition=IfCondition(LaunchConfiguration('rviz')),
         package='rviz2',

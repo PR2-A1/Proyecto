@@ -1,5 +1,5 @@
 # ros_gz_bridge config for the MiR simulation.
-# Used with expand_gz_topic_names: True so the bridge
+# It is used with expand_gz_topic_names: True so the bridge
 # automatically resolves model-namespaced Gazebo topics.
 
 - topic_name: "/clock"

@@ -43,7 +43,7 @@ def generate_launch_description():
     pkg_share = FindPackageShare('mir_nav2_robodk')
     nav2_bringup_share = FindPackageShare('nav2_bringup')
 
-    # --- Launch arguments ---
+    # Launch arguments
     use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time', default_value='false',
         description='Use simulation clock')
@@ -74,7 +74,7 @@ def generate_launch_description():
         default_value=PathJoinSubstitution([pkg_share, 'config', 'slam_toolbox_params.yaml']),
         description='Path to SLAM Toolbox parameters file')
 
-    # --- Robot description ---
+    # Robot description
     xacro_file = PathJoinSubstitution([pkg_share, 'urdf', 'mir.urdf.xacro'])
     robot_description = Command([
         'xacro ', xacro_file,
@@ -99,7 +99,7 @@ def generate_launch_description():
         }],
     )
 
-    # --- Nav2 bringup (localization mode with map) ---
+    # Nav2 bringup (localization mode with map)
     nav2_localization = GroupAction(
         condition=UnlessCondition(LaunchConfiguration('slam')),
         actions=[
@@ -117,7 +117,7 @@ def generate_launch_description():
         ],
     )
 
-    # --- Nav2 bringup (SLAM mode) ---
+    # Nav2 bringup (SLAM mode)
     # nav2_bringup already launches slam_toolbox when slam:=True.
     nav2_slam = GroupAction(
         condition=IfCondition(LaunchConfiguration('slam')),
@@ -136,7 +136,7 @@ def generate_launch_description():
         ],
     )
 
-    # --- RViz ---
+    # RViz
     rviz_config = PathJoinSubstitution([pkg_share, 'rviz', 'nav2_view.rviz'])
     rviz_node = Node(
         condition=IfCondition(LaunchConfiguration('rviz')),
