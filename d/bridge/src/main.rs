@@ -60,6 +60,12 @@ fn parse_caja_paletizada(v: &Value) -> Option<CajaPaletizadaEvent> {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
+    // Busca .env junto al ejecutable y luego en el directorio actual
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let _ = dotenvy::from_path(exe_dir.join(".env"));
+        }
+    }
     let _ = dotenv();
 
     let mqtt_host      = env::var("MQTT_HOST").unwrap_or_else(|_| "broker.hivemq.com".into());

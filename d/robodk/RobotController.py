@@ -12,9 +12,9 @@ import time
 import logging
 import sys, os
 
-# Asegurar que config.py se encuentra aunque RoboDK copie el script a /tmp/
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
+import CobotController as cc
 
 logging.basicConfig(
     filename=r"C:\p\demo\robodk\robodk_demo.log",
@@ -48,7 +48,6 @@ def handle_message(mqttc: object, topic: str, raw: str) -> None:
     if topic == config.TOPIC_ROBODK_ACTION:
         cmd = payload.get("cmd", "").lower()
         if cmd == "spawn":
-            # Ejecutar en hilo separado para no bloquear el loop MQTT
             threading.Thread(
                 target=_spawn_tapa,
                 args=(payload, mqttc),
@@ -56,6 +55,10 @@ def handle_message(mqttc: object, topic: str, raw: str) -> None:
             ).start()
         else:
             log.warning("Comando desconocido en robodk/action: %s", cmd)
+
+    elif topic == config.TOPIC_COBOT_ACTION:
+        cc.handle_cobot_action(mqttc, payload)
+
     else:
         log.debug("Topic no gestionado: %s", topic)
 

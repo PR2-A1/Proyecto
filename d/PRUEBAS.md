@@ -189,15 +189,15 @@ I (...) demo_integracion::logic_task: [ESC1] Ordenando paletizar — caja=C000X 
 
 ```json
 {
-  "status":    "FINISHED",
+  "status":    "COMPLETED",
   "id_pallet": 10
 }
 ```
 
 **Log ESP32:**
 ```
-I (...) demo_integracion::mqtt_manager: Cobot FINISHED pallet_id=10
-I (...) demo_integracion::logic_task: [ESC1] Cobot confirmó FINISHED pallet_id=10
+I (...) demo_integracion::mqtt_manager: Cobot COMPLETED pallet_id=10
+I (...) demo_integracion::logic_task: [ESC1] Cobot confirmó COMPLETED pallet_id=10
 ```
 
 > La consulta de operarios **solo ocurre en el ciclo 12** (pallet lleno). En ciclos 1–11 no se consulta.

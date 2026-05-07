@@ -150,13 +150,13 @@ fn handle_cobot_status(
     let status    = val.get("status").and_then(|v| v.as_str()).unwrap_or("");
     let pallet_id = val.get("id_pallet").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
-    if !status.eq_ignore_ascii_case("FINISHED") {
+    if !status.eq_ignore_ascii_case("COMPLETED") {
         return;
     }
 
     if let Ok(mut st) = state.try_lock() {
         st.cobot_in_progress = false;
-        info!("Cobot FINISHED pallet_id={}", pallet_id);
+        info!("Cobot COMPLETED pallet_id={}", pallet_id);
     }
 
     // Notificar al hilo de escenario 1
