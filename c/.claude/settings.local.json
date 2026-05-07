@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/p/d/bridge/src/**)",
+      "Read(//c/p/d/db/**)"
+    ],
+    "additionalDirectories": [
+      "c:\\p\\d\\bridge\\src"
+    ]
+  }
+}
