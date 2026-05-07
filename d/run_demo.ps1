@@ -44,12 +44,25 @@ if (-not $SkipDb) {
         exit 1
     }
 
-    $dbHost = if ($dbLine -match "host=(\S+)")     { $Matches[1] } else { "127.0.0.1" }
-    $dbUser = if ($dbLine -match "user=(\S+)")     { $Matches[1] } else { "postgres"  }
-    $dbPass = if ($dbLine -match "password=(\S+)") { $Matches[1] } else { ""          }
-    $dbName = if ($dbLine -match "dbname=(\S+)")   { $Matches[1] } else { "giirob"    }
+    # Soporta formato URI: postgres://user:pass@host/dbname
+    if ($dbLine -match "^postgres(?:ql)?://([^:]+):([^@]*)@([^/:]+)(?::\d+)?/(\S+)$") {
+        $dbUser = $Matches[1]
+        $dbPass = $Matches[2]
+        $dbHost = $Matches[3]
+        $dbName = $Matches[4]
+    } else {
+        $dbHost = if ($dbLine -match "host=(\S+)")     { $Matches[1] } else { "127.0.0.1" }
+        $dbUser = if ($dbLine -match "user=(\S+)")     { $Matches[1] } else { "postgres"  }
+        $dbPass = if ($dbLine -match "password=(\S+)") { $Matches[1] } else { ""          }
+        $dbName = if ($dbLine -match "dbname=(\S+)")   { $Matches[1] } else { "giirob"    }
+    }
 
     $env:PGPASSWORD = $dbPass
+
+    # Crear la BD si no existe
+    Write-Host "  Creando base de datos '$dbName' si no existe..." -ForegroundColor Gray
+    & $psql -h $dbHost -U $dbUser -d postgres -c "CREATE DATABASE `"$dbName`";" 2>$null
+    # Ignorar error si ya existe
 
     # Aplicar schema completo (tablas + datos de prueba)
     Write-Host "  Aplicando schema y datos de prueba..." -ForegroundColor Gray
