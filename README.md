@@ -190,7 +190,7 @@ side keeps working. *RoboDK is optional*.
 | `mqtt_port`                | int   | `1883`                                        | MQTT port                                          |
 | `mqtt_topic_amr_action`    | str   | `giirob/pr2-A1/devices/amr/action`            | Where the ESP32 sends orders                       |
 | `mqtt_topic_amr_status`    | str   | `giirob/pr2-A1/devices/amr/status`            | Where the AMR posts its status                     |
-| `mqtt_topic_cobot_status`  | str   | `giirob/pr2/devices/cobot/status`             | Cobot status topic the AMR listens to              |
+| `mqtt_topic_cobot_status`  | str   | `giirob/pr2-A1/devices/cobot/status`          | Cobot status topic the AMR listens to              |
 | `amr_device_name`          | str   | `AMR`                                         | Device id (used for the MQTT client_id)            |
 
 ---
