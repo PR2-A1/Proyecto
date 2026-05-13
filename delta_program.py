@@ -44,8 +44,9 @@ def pick_function():
 	#CHANGE BACK TO THE ROBOT'S PARENT REFERENCE FRAME
 	robot.setPoseFrame(robot_frame)
 	
-def place_function():
+def place_function(color):
 	robot.setPoseFrame(place_frame)
+	
 
 while 1:
 	x = RDK.getParam('camera_x')
