@@ -14,13 +14,11 @@ use std::{
 
 //Importación de módulos
 mod config;
+mod control_state;
+mod emergency_task;
 mod logic_task;
 mod mqtt_manager;
-mod vision_task;
-mod wifi_connection;
 mod wifi_manager;
-mod emergency_task;
-mod control_state;
 
 fn main() -> anyhow::Result<()> {
     //Inicialización de logger y parches necesarios para funcionamiento de las bibliotecas utilizadas.
@@ -42,7 +40,7 @@ fn main() -> anyhow::Result<()> {
     let emergency_button_pin = pins.gpio38;
     let resume_button_pin = pins.gpio39;
     let emergency_led_pin = pins.gpio10;
-    let emergency_buzzer_pin = pins.gpio11;
+    let emergency_buzzer_pin = pins.gpio48;
 
     //Inicio de tareas, conexión WIFI
     wifi_manager::spawn_wifi_manager(modem, sys_loop, nvs_wifi, Arc::clone(&wifi_ready))?;
@@ -65,25 +63,23 @@ fn main() -> anyhow::Result<()> {
     let control_state = Arc::new(Mutex::new(state));
     let emergency_stop = Arc::new(AtomicBool::new(false));
     
-    // Canal para recibir muestras de visión desde MQTT
-    let (vision_raw_tx, vision_raw_rx) = sync_channel::<String>(128);
-    let (vision_tx, vision_rx) = sync_channel::<vision_task::VisionSample>(128);
-    
+    let (vision_tx, vision_rx) = sync_channel::<String>(128);
+    let pull_slot = Arc::new(Mutex::new(None::<std::sync::mpsc::SyncSender<String>>));
+
     let mqtt = Arc::new(Mutex::new(mqtt_manager::MqttManager::connect_and_subscribe_with_state(
         Arc::clone(&control_state),
         Arc::clone(&emergency_stop),
-        vision_raw_tx,
+        vision_tx,
+        Arc::clone(&pull_slot),
         nvs,
     )?));
 
-    let _vision_handle = vision_task::spawn_vision_task(vision_raw_rx, vision_tx)?;
-
-    // Tarea de lógica: procesa detecciones de cámara y genera spawns en Auto
     let _logic_handle = logic_task::spawn_logic_task(
         Arc::clone(&mqtt),
         vision_rx,
         Arc::clone(&emergency_stop),
         Arc::clone(&control_state),
+        pull_slot,
     )?;
 
     //Tarea principal gestiona la emergencia.

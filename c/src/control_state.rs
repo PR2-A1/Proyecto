@@ -1,3 +1,4 @@
+use crate::config;
 use esp_idf_svc::{
     nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault},
     sys::EspError,
@@ -22,7 +23,7 @@ pub struct ControlState {
     pub auto_target: u32,           // Cantidad total solicitada en Auto
     pub auto_spawned: u32,           // Tapas ya generadas/spawneadas
     pub auto_validated: u32,         // Tapas validadas por cámara
-    pub lote_id: Option<String>,
+    pub id_lote: Option<String>,
     pub manual_remaining: u32,
     pub manual_color: String,
     pub manual_spawn_pending: bool,
@@ -33,12 +34,16 @@ pub struct ControlState {
     pub amr_pending_tolva: Option<usize>,
     pub amr_arrived_tolva: Option<usize>,
     pub amr_arrived_at: Option<std::time::Instant>,
-    pub amr_caja_id: Option<String>,
+    pub amr_id_caja: Option<String>,
     pub amr_caja_tolva: Option<usize>,
     pub cobot_ready: bool,
     pub cobot_in_progress: bool,
-    pub cobot_next_pallet: usize,
-    pub pallet_counts: [u64; 6],
+    pub cobot_next_pallet: u32,
+    pub cobot_pending_color: Option<String>,
+    pub cobot_pending_caja: Option<String>,
+    pub cobot_active_color: Option<String>,
+    pub cobot_completed_event: Option<String>,
+    pub pallet_counts: HashMap<String, u64>,
     pub status_requested: bool,
     pub pending_tapas: HashMap<String, usize>,
 }
@@ -50,7 +55,7 @@ impl Default for ControlState {
             auto_target: 0,
             auto_spawned: 0,
             auto_validated: 0,
-            lote_id: None,
+            id_lote: None,
             manual_remaining: 0,
             manual_color: "red".to_string(),
             manual_spawn_pending: false,
@@ -61,12 +66,16 @@ impl Default for ControlState {
             amr_pending_tolva: None,
             amr_arrived_tolva: None,
             amr_arrived_at: None,
-            amr_caja_id: None,
+            amr_id_caja: None,
             amr_caja_tolva: None,
             cobot_ready: false,
             cobot_in_progress: false,
-            cobot_next_pallet: 0,
-            pallet_counts: [0; 6],
+            cobot_next_pallet: config::COBOT_PALLET_ID_BASE,
+            cobot_pending_color: None,
+            cobot_pending_caja: None,
+            cobot_active_color: None,
+            cobot_completed_event: None,
+            pallet_counts: HashMap::new(),
             status_requested: false,
             pending_tapas: HashMap::new(),
         }

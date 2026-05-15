@@ -38,23 +38,23 @@ INSERT INTO proveedor (num_proveedor, cif_nif, nombre, certificacion_iso) VALUES
 ('P0004', 'A99887766', 'Suministros Vega S.L.',   true),
 ('P0005', 'B55443322', 'Componentes del Sur S.A.', false);
 
-INSERT INTO operario (operario_id, nombre, apellido) VALUES
-(1, 'Carlos',   'Martínez'),
-(2, 'Laura',    'Sánchez'),
-(3, 'Miguel',   'Torres'),
-(4, 'Ana',      'Romero'),
-(5, 'Fernando', 'Jiménez');
+INSERT INTO operario (id_operario, nombre, apellido) VALUES
+('OP001', 'Carlos',   'Martínez'),
+('OP002', 'Laura',    'Sánchez'),
+('OP003', 'Miguel',   'Torres'),
+('OP004', 'Ana',      'Romero'),
+('OP005', 'Fernando', 'Jiménez');
 ```
 
 ---
 
 ## Restricciones del esquema
 
-- `caja_id`, `lote_id`, `proveedor` → `CHAR(5)`, máximo 5 caracteres.
+- `id_caja`, `id_lote`, `proveedor` → `CHAR(5)`, máximo 5 caracteres.
 - `color` en `caja` → solo acepta: `RED`, `GREEN`, `BLUE`, `YELLOW`, `ORANGE`, `WHITE`.
 - `proveedor` en `proveedor_material` → FK a `proveedor`, debe existir antes.
-- `lotes` en `box_completed` → FK a `material_no_clasificado`, el lote debe existir antes.
-- `operario_cierre_id` en `palet` → FK a `operario`, debe existir antes.
+- `lotes` en `box_completed` → FK a `lote`, el lote debe existir antes.
+- `id_operario` en `palet` → FK a `operario`, debe existir antes.
 
 ---
 
@@ -73,7 +73,7 @@ Respuesta esperada (campos clave):
 ```json
 {
   "mode": "manual",
-  "lote_id": null,
+  "id_lote": null,
   "total_processed": 0,
   "auto_target": 0,
   "tolvas": { "TOLVA_1": 0, "TOLVA_2": 0, "TOLVA_3": 0, "TOLVA_4": 0, "TOLVA_5": 0, "TOLVA_6": 0 },
@@ -110,7 +110,7 @@ Verificar `"mode": "manual"` en la respuesta de estado.
 { "cmd": "reset" }
 ```
 
-**Verificar:** todos los contadores de tolvas y pallets a 0, `lote_id` limpio. El modo no cambia.
+**Verificar:** todos los contadores de tolvas y pallets a 0, `id_lote` limpio. El modo no cambia.
 
 ---
 
@@ -120,22 +120,22 @@ Verificar `"mode": "manual"` en la respuesta de estado.
 <!-- Funciona correctamente -->
 **Topic:** `giirob/pr2-A1/devices/scada/action`
 ```json
-{ "cmd": "gen", "lote_id": "L0020", "proveedor": "P0001", "quantity": 200 }
+{ "cmd": "gen", "id_lote": "L0020", "proveedor": "P0001", "quantity": 200 }
 ```
 
 **Verificar lote:**
 <!-- Funciona correctamente -->
 ```sql
-SELECT lote_id, total_tapas_entrada, fecha_inicio
-FROM material_no_clasificado
-WHERE lote_id = 'L0020';
+SELECT id_lote, total_tapas_entrada, fecha_inicio
+FROM lote
+WHERE id_lote = 'L0020';
 -- Debe mostrar L0020, 200, fecha de hoy
 ```
 
 **Verificar proveedor:**
 <!-- Funciona correctamente -->
 ```sql
-SELECT proveedor, lote_id FROM proveedor_material WHERE lote_id = 'L0020';
+SELECT proveedor, lote FROM proveedor_material WHERE lote = 'L0020';
 -- Debe mostrar P0001, L0020
 ```
 
@@ -144,14 +144,14 @@ SELECT proveedor, lote_id FROM proveedor_material WHERE lote_id = 'L0020';
 ### 2.2 Crear lote sin proveedor
 <!-- Funciona correctamente -->
 ```json
-{ "cmd": "gen", "lote_id": "L0021", "quantity": 50 }
+{ "cmd": "gen", "id_lote": "L0021", "quantity": 50 }
 ```
 
 ```sql
-SELECT lote_id FROM material_no_clasificado WHERE lote_id = 'L0021';
+SELECT id_lote FROM lote WHERE id_lote = 'L0021';
 -- Debe existir
 
-SELECT COUNT(*) FROM proveedor_material WHERE lote_id = 'L0021';
+SELECT COUNT(*) FROM proveedor_material WHERE lote = 'L0021';
 -- Debe devolver 0
 ```
 
@@ -161,17 +161,17 @@ SELECT COUNT(*) FROM proveedor_material WHERE lote_id = 'L0021';
 <!-- Funciona correctamente -->
 Publicar el mismo lote con cantidad distinta:
 ```json
-{ "cmd": "gen", "lote_id": "L0020", "proveedor": "P0002", "quantity": 999 }
+{ "cmd": "gen", "id_lote": "L0020", "proveedor": "P0002", "quantity": 999 }
 ```
 
 ```sql
-SELECT total_tapas_entrada FROM material_no_clasificado WHERE lote_id = 'L0020';
+SELECT total_tapas_entrada FROM lote WHERE id_lote = 'L0020';
 -- Debe seguir siendo 200, no 999
 ```
 
 ---
 
-### 2.4 Alias de campo — `lote` en lugar de `lote_id`
+### 2.4 Alias de campo — `lote` en lugar de `id_lote`
 <!-- Funciona correctamente -->
 El bridge acepta ambas claves:
 ```json
@@ -179,7 +179,7 @@ El bridge acepta ambas claves:
 ```
 
 ```sql
-SELECT lote_id FROM material_no_clasificado WHERE lote_id = 'L0022';
+SELECT id_lote FROM lote WHERE id_lote = 'L0022';
 -- Debe existir
 ```
 
@@ -188,13 +188,13 @@ SELECT lote_id FROM material_no_clasificado WHERE lote_id = 'L0022';
 ### 2.5 Payload inválido — sin quantity
 <!-- Funciona correctamente -->
 ```json
-{ "cmd": "gen", "lote_id": "L0099" }
+{ "cmd": "gen", "id_lote": "L0099" }
 ```
 
-**Verificar en los logs del bridge:** mensaje `gen sin lote_id o quantity inválido`.
+**Verificar en los logs del bridge:** mensaje `gen sin id_lote o quantity inválido`.
 
 ```sql
-SELECT COUNT(*) FROM material_no_clasificado WHERE lote_id = 'L0099';
+SELECT COUNT(*) FROM lote WHERE id_lote = 'L0099';
 -- Debe devolver 0
 ```
 
@@ -208,16 +208,16 @@ Asegurarse de estar en modo Manual (prueba 1.3) y tener el lote activo.
 
 **Topic:** `giirob/pr2-A1/devices/scada/action`
 ```json
-{ "cmd": "gen", "lote_id": "L0020", "color": "red", "quantity": 1 }
+{ "cmd": "gen", "id_lote": "L0020", "color": "red", "quantity": 1 }
 ```
 
 **Secuencia esperada:**
-1. ESP32 publica SPAWN en `robodk/action` → `{"cmd":"spawn","color":"red","cap_id":"cap_1"}`
+1. ESP32 publica SPAWN en `robodk/action` → `{"cmd":"spawn","color":"red","id_cap":"C0001"}`
 2. Python bridge crea tapa roja en RoboDK, la posiciona en `spawn_point`
-3. Python bridge publica en `camera/data` → `{"x":...,"y":...,"color":"red","precision":0.99,"cap_id":"cap_1"}`
+3. Python bridge publica en `camera/data` → `{"x":...,"y":...,"color":"red","precision":0.99,"id_cap":"C0001"}`
 4. ESP32 valida color (coincide con `red`) y publica PICK en `delta/action`
 5. Python bridge ejecuta pick: aproximación → descenso → subida → tolva → home
-6. SCADA publica confirmación en `scada/status` → `{"cmd":"done","cap_id":"cap_1","tolva":"TOLVA_1"}`
+6. SCADA publica confirmación en `scada/status` → `{"cmd":"done","id_cap":"C0001","tolva":"TOLVA_1"}`
 7. ESP32 incrementa `tolva_counts[0]`
 
 ---
@@ -228,7 +228,7 @@ Con `expected_color = "red"`, forzar una detección de cámara de color diferent
 
 **Topic:** `giirob/pr2-A1/devices/camera/data`
 ```json
-{ "x": 10.5, "y": 8.2, "color": "blue", "precision": 0.98, "cap_id": "cap_X" }
+{ "x": 10.5, "y": 8.2, "color": "blue", "precision": 0.98, "id_cap": "cap_X" }
 ```
 
 **Verificar:** el ESP32 NO publica PICK (color no coincide). Monitorizar `delta/action` — no debe aparecer ningún mensaje.
@@ -238,7 +238,7 @@ Con `expected_color = "red"`, forzar una detección de cámara de color diferent
 ### 3.3 Detección con precisión baja (descartada)
 
 ```json
-{ "x": 10.5, "y": 8.2, "color": "red", "precision": 0.90, "cap_id": "cap_Y" }
+{ "x": 10.5, "y": 8.2, "color": "red", "precision": 0.90, "id_cap": "cap_Y" }
 ```
 
 **Verificar:** el ESP32 descarta la detección (precision ≤ 0.95). No se publica PICK.
@@ -251,7 +251,7 @@ Con `expected_color = "red"`, forzar una detección de cámara de color diferent
 <!-- Revisar más tarde cuando esté robodk -->
 Cambiar a modo Auto y lanzar lote:
 ```json
-{ "cmd": "gen", "lote_id": "L0020", "quantity": 6 }
+{ "cmd": "gen", "id_lote": "L0020", "quantity": 6 }
 ```
 
 **Secuencia esperada:**
@@ -259,7 +259,7 @@ Cambiar a modo Auto y lanzar lote:
 2. Cada tapa aparece en RoboDK, es detectada por la "cámara" y clasificada por el Delta
 3. Al completar las 6 tapas, ESP32 publica en `scada/status`:
 ```json
-{ "event": "batch_complete", "total": 6, "lote_id": "L0020" }
+{ "event": "batch_complete", "total": 6, "id_lote": "L0020" }
 ```
 
 **Verificar estado tras completar:**
@@ -317,7 +317,7 @@ Después de 10 s de la llegada, el ESP32 publica:
 ```json
 {
   "event": "BOX_COMPLETED",
-  "caja_id": "CXXXX",
+  "id_caja": "CXXXX",
   "color": "red",
   "codigo_etiqueta": "ETQXXXXXXX",
   "estado": true,
@@ -327,7 +327,7 @@ Después de 10 s de la llegada, el ESP32 publica:
 
 **Verificar en PostgreSQL:**
 ```sql
-SELECT caja_id, color, estado, palet_id FROM caja ORDER BY caja_id DESC LIMIT 5;
+SELECT id_caja, color, estado, id_palet FROM caja ORDER BY id_caja DESC LIMIT 5;
 ```
 
 ---
@@ -362,28 +362,26 @@ Tras `cobot_ready = true`, el ESP32 envía `start` al Cobot. Simular finalizaci�
 
 **Topic:** `giirob/pr2-A1/devices/cobot/status`
 ```json
-{ "status": "finished", "id_pallet": 10 }
+{ "status": "completed", "id_pallet": "P0001" }
 ```
 
 **Verificar en `db/push`:**
 ```json
 {
   "event": "caja_paletizada",
-  "caja_id": "CXXXX",
-  "palet_id": 10,
-  "codigo_palet": "PALET000001",
-  "color_id": "RED",
+  "id_caja": "CXXXX",
+  "id_palet": "P0001",
+  "id_color": "RED",
   "estado": false
 }
 ```
 
 **Verificar en PostgreSQL:**
 ```sql
-SELECT palet_id, codigo_palet, estado, operario_cierre_id FROM palet WHERE palet_id = 10;
--- operario_cierre_id debe ser NULL (pallet aún abierto)
--- Revisar porque el operario_cierre_id NO ESTÁ SACANDO NULL
+SELECT id_palet, id_color, estado, id_operario FROM palet WHERE id_palet = 'P0001';
+-- id_operario debe ser NULL (pallet aún abierto)
 
-SELECT caja_id, palet_id FROM caja WHERE palet_id = 10;
+SELECT id_caja, id_palet FROM caja WHERE id_palet = 'P0001';
 ```
 
 ---
@@ -399,45 +397,44 @@ Tras 12 finalizaciones del Cobot para el mismo pallet, se activa el flujo de cie
 ```
 2. Bridge responde en `db/pull/response`:
 ```json
-{ "operarios": [{"operario_id": 1, "nombre": "Carlos", "apellido": "Martínez"}, ...] }
+{ "operarios": [{"id_operario": "OP001", "nombre": "Carlos", "apellido": "Martínez"}, ...] }
 ```
 3. ESP32 elige un operario y publica en `db/push`:
 ```json
 {
   "event": "caja_paletizada",
-  "caja_id": "CXXXX",
-  "palet_id": 10,
-  "codigo_palet": "PALET000001",
-  "color_id": "RED",
+  "id_caja": "CXXXX",
+  "id_palet": "P0001",
+  "id_color": "RED",
   "estado": true,
-  "operario_id": 3
+  "id_operario": "OP003"
 }
 ```
 4. ESP32 publica en `scada/status`:
 ```json
-{ "event": "pallet_full", "palet_id": 10, "codigo_palet": "PALET000001" }
+{ "event": "pallet_full", "id_palet": "P0001" }
 ```
 
 **Verificar en PostgreSQL:**
 ```sql
-SELECT palet_id, estado, operario_cierre_id FROM palet WHERE palet_id = 10;
--- estado = true, operario_cierre_id entre 1 y 5
+SELECT id_palet, estado, id_operario FROM palet WHERE id_palet = 'P0001';
+-- estado = true, id_operario entre OP001 y OP005
 
-SELECT p.palet_id, p.estado, o.nombre, o.apellido
+SELECT p.id_palet, p.estado, o.nombre, o.apellido
 FROM palet p
-JOIN operario o ON o.operario_id = p.operario_cierre_id
-WHERE p.palet_id = 10;
+JOIN operario o ON o.id_operario = p.id_operario
+WHERE p.id_palet = 'P0001';
 ```
 
 ---
 
 ### 6.3 Rotación de pallets
 
-Tras cerrar el pallet 10, el siguiente `FINISHED` del Cobot debe dirigirse al pallet 11 (`pallet2`):
+Tras cerrar el pallet P0001, el siguiente `completed` del Cobot debe dirigirse al pallet P0002 (`PALLET_2`):
 
 **Verificar en `cobot/action`:**
 ```json
-{ "cmd": "start", "id_pallet": 11, "mode": "pallet", "pos": "pallet2" }
+{ "cmd": "start", "id_pallet": "P0002", "color": "red", "boxes_stacked": 0 }
 ```
 
 ---
@@ -448,12 +445,12 @@ Tras cerrar el pallet 10, el siguiente `FINISHED` del Cobot debe dirigirse al pa
 
 **Topic:** `giirob/pr2-A1/system/emergency/action`
 ```json
-{ "cmd": "estop" }
+{ "cmd": "estop", "source": "SCADA" }
 ```
 
 **Verificar en `emergency/status`:**
 ```json
-{ "status": "active", "device": "ESP32-S3", "sensor": "mqtt_action" }
+{ "status": "emergency_active", "source": "SCADA" }
 ```
 
 **Verificar comportamiento:**
@@ -467,7 +464,7 @@ Tras cerrar el pallet 10, el siguiente `FINISHED` del Cobot debe dirigirse al pa
 
 Con emergencia activa, publicar:
 ```json
-{ "cmd": "gen", "lote_id": "L0099", "quantity": 1 }
+{ "cmd": "gen", "id_lote": "L0099", "quantity": 1 }
 ```
 
 **Verificar:** el ESP32 NO procesa el spawn. No aparece ningún mensaje en `robodk/action`.
@@ -480,12 +477,12 @@ Con emergencia activa, publicar:
 
 **Topic:** `giirob/pr2-A1/system/emergency/action`
 ```json
-{ "cmd": "resume" }
+{ "cmd": "resume", "source": "SCADA" }
 ```
 
 **Verificar en `emergency/status`:**
 ```json
-{ "status": "operative", "source": "ESP32-S3", "sensor": "mqtt_action" }
+{ "status": "emergency_inactive", "source": "SCADA" }
 ```
 
 El Python bridge vuelve a aceptar picks.
@@ -498,6 +495,11 @@ El Python bridge vuelve a aceptar picks.
 { "cmd": "estop", "source": "AMR", "reason": "collision" }
 ```
 
+**Verificar en `emergency/status`:**
+```json
+{ "status": "emergency_active", "source": "AMR" }
+```
+
 **Verificar:** mismo comportamiento que 7.1. El campo `source` y `reason` son informativos.
 
 ---
@@ -506,7 +508,7 @@ El Python bridge vuelve a aceptar picks.
 
 1. Encolar un pick manualmente publicando en `delta/action`:
 ```json
-{ "cmd": "pick", "x": 10.0, "y": 5.0, "color": "red", "tolva": "tolva_1", "cap_id": "cap_test" }
+{ "cmd": "pick", "x": 10.0, "y": 5.0, "color": "red", "tolva": "tolva_1", "id_cap": "cap_test" }
 ```
 2. Inmediatamente activar emergencia (prueba 7.1).
 
@@ -524,7 +526,7 @@ Pruebas aisladas del bridge Rust publicando directamente en los topics. No requi
 ```json
 {
   "event": "BOX_COMPLETED",
-  "caja_id": "T0001",
+  "id_caja": "T0001",
   "color": "green",
   "codigo_etiqueta": "ETQ9990001",
   "estado": true,
@@ -533,9 +535,9 @@ Pruebas aisladas del bridge Rust publicando directamente en los topics. No requi
 ```
 
 ```sql
-SELECT caja_id, color, codigo_etiqueta, estado, palet_id
-FROM caja WHERE caja_id = 'T0001';
--- color=GREEN, palet_id=NULL
+SELECT id_caja, color, codigo_etiqueta, estado, id_palet
+FROM caja WHERE id_caja = 'T0001';
+-- color=GREEN, id_palet=NULL
 ```
 
 ---
@@ -547,7 +549,7 @@ El lote `L0020` debe existir (prueba 2.1).
 ```json
 {
   "event": "BOX_COMPLETED",
-  "caja_id": "T0002",
+  "id_caja": "T0002",
   "color": "blue",
   "codigo_etiqueta": "ETQ9990002",
   "estado": true,
@@ -556,19 +558,19 @@ El lote `L0020` debe existir (prueba 2.1).
 ```
 
 ```sql
-SELECT lote_id, caja_id FROM material_caja WHERE caja_id = 'T0002';
+SELECT lote, id_caja FROM material_caja WHERE id_caja = 'T0002';
 -- Debe mostrar L0020, T0002
 ```
 
 ---
 
-### 8.3 Actualizar caja — color y etiqueta cambian, `palet_id` no
+### 8.3 Actualizar caja — color y etiqueta cambian, `id_palet` no
 
 Publicar un segundo `BOX_COMPLETED` para la misma caja:
 ```json
 {
   "event": "BOX_COMPLETED",
-  "caja_id": "T0001",
+  "id_caja": "T0001",
   "color": "yellow",
   "codigo_etiqueta": "ETQ9999999",
   "estado": false,
@@ -577,8 +579,8 @@ Publicar un segundo `BOX_COMPLETED` para la misma caja:
 ```
 
 ```sql
-SELECT color, codigo_etiqueta, estado, palet_id FROM caja WHERE caja_id = 'T0001';
--- color=YELLOW, etiqueta=ETQ9999999, estado=false, palet_id=NULL (sin cambio)
+SELECT color, codigo_etiqueta, estado, id_palet FROM caja WHERE id_caja = 'T0001';
+-- color=YELLOW, etiqueta=ETQ9999999, estado=false, id_palet=NULL (sin cambio)
 ```
 
 ---
@@ -588,28 +590,27 @@ SELECT color, codigo_etiqueta, estado, palet_id FROM caja WHERE caja_id = 'T0001
 ```json
 {
   "event": "caja_paletizada",
-  "caja_id": "T0001",
-  "palet_id": 10,
-  "codigo_palet": "PALET000010",
-  "color_id": "YELLOW",
+  "id_caja": "T0001",
+  "id_palet": "P0001",
+  "id_color": "YELLOW",
   "estado": false
 }
 ```
 
 ```sql
-SELECT palet_id FROM caja WHERE caja_id = 'T0001';                   -- 10
-SELECT operario_cierre_id FROM palet WHERE palet_id = 10;            -- NULL
+SELECT id_palet FROM caja WHERE id_caja = 'T0001';                   -- 'P0001'
+SELECT id_operario FROM palet WHERE id_palet = 'P0001';              -- NULL
 ```
 
 ---
 
-### 8.5 `palet_id` sobrevive a un segundo `BOX_COMPLETED`
+### 8.5 `id_palet` sobrevive a un segundo `BOX_COMPLETED`
 
 Tras la prueba 8.4, publicar de nuevo:
 ```json
 {
   "event": "BOX_COMPLETED",
-  "caja_id": "T0001",
+  "id_caja": "T0001",
   "color": "orange",
   "codigo_etiqueta": "ETQ9999999",
   "estado": true,
@@ -618,8 +619,8 @@ Tras la prueba 8.4, publicar de nuevo:
 ```
 
 ```sql
-SELECT palet_id FROM caja WHERE caja_id = 'T0001';
--- DEBE seguir siendo 10 — el ON CONFLICT no toca palet_id
+SELECT id_palet FROM caja WHERE id_caja = 'T0001';
+-- DEBE seguir siendo '00010' — el ON CONFLICT no toca id_palet
 ```
 
 ---
@@ -629,39 +630,38 @@ SELECT palet_id FROM caja WHERE caja_id = 'T0001';
 ```json
 {
   "event": "caja_paletizada",
-  "caja_id": "T0002",
-  "palet_id": 10,
-  "codigo_palet": "PALET000010",
-  "color_id": "YELLOW",
+  "id_caja": "T0002",
+  "id_palet": "P0001",
+  "id_color": "YELLOW",
   "estado": true,
-  "operario_id": 2
+  "id_operario": "OP002"
 }
 ```
 
 ```sql
-SELECT estado, operario_cierre_id FROM palet WHERE palet_id = 10;
--- estado=true, operario_cierre_id=2
+SELECT estado, id_operario FROM palet WHERE id_palet = 'P0001';
+-- estado=true, id_operario='OP002'
 ```
 
 ---
 
-### 8.7 Cerrar pallet sin `operario_id` (warning, sin fallo)
+### 8.7 Cerrar pallet sin `id_operario` (warning, sin fallo)
 
 ```json
 {
   "event": "caja_paletizada",
-  "caja_id": "T0001",
-  "palet_id": 11,
+  "id_caja": "T0001",
+  "id_palet": 11,
   "codigo_palet": "PALET000011",
-  "color_id": "YELLOW",
+  "id_color": "YELLOW",
   "estado": true
 }
 ```
 
-**Verificar en logs del bridge:** mensaje `Palet 11 cerrado sin operario_id`.
+**Verificar en logs del bridge:** mensaje `Palet 11 cerrado sin id_operario`.
 
 ```sql
-SELECT operario_cierre_id FROM palet WHERE palet_id = 11;
+SELECT id_operario FROM palet WHERE id_palet = '00011';
 -- NULL — no se asignó
 ```
 
@@ -678,11 +678,11 @@ SELECT operario_cierre_id FROM palet WHERE palet_id = 11;
 ```json
 {
   "operarios": [
-    {"operario_id": 1, "nombre": "Carlos",   "apellido": "Martínez"},
-    {"operario_id": 2, "nombre": "Laura",    "apellido": "Sánchez"},
-    {"operario_id": 3, "nombre": "Miguel",   "apellido": "Torres"},
-    {"operario_id": 4, "nombre": "Ana",      "apellido": "Romero"},
-    {"operario_id": 5, "nombre": "Fernando", "apellido": "Jiménez"}
+    {"id_operario": "OP001", "nombre": "Carlos",   "apellido": "Martínez"},
+    {"id_operario": "OP002", "nombre": "Laura",    "apellido": "Sánchez"},
+    {"id_operario": "OP003", "nombre": "Miguel",   "apellido": "Torres"},
+    {"id_operario": "OP004", "nombre": "Ana",      "apellido": "Romero"},
+    {"id_operario": "OP005", "nombre": "Fernando", "apellido": "Jiménez"}
   ]
 }
 ```
@@ -703,12 +703,12 @@ esto no es json
 ## Limpieza de datos de prueba
 
 ```sql
-UPDATE caja SET palet_id = NULL              WHERE caja_id IN ('T0001', 'T0002');
-DELETE FROM palet                            WHERE palet_id IN (10, 11);
-DELETE FROM material_caja                    WHERE caja_id IN ('T0001', 'T0002');
-DELETE FROM caja                             WHERE caja_id IN ('T0001', 'T0002');
-DELETE FROM proveedor_material               WHERE lote_id IN ('L0020', 'L0021', 'L0022');
-DELETE FROM material_no_clasificado          WHERE lote_id IN ('L0020', 'L0021', 'L0022');
-DELETE FROM operario                         WHERE operario_id IN (1, 2, 3, 4, 5);
+UPDATE caja SET id_palet = NULL              WHERE id_caja IN ('T0001', 'T0002');
+DELETE FROM palet                            WHERE id_palet IN ('P0001', 'P0002');
+DELETE FROM material_caja                    WHERE id_caja IN ('T0001', 'T0002');
+DELETE FROM caja                             WHERE id_caja IN ('T0001', 'T0002');
+DELETE FROM proveedor_material               WHERE lote IN ('L0020', 'L0021', 'L0022');
+DELETE FROM lote                             WHERE id_lote IN ('L0020', 'L0021', 'L0022');
+DELETE FROM operario                         WHERE id_operario IN ('OP001', 'OP002', 'OP003', 'OP004', 'OP005');
 DELETE FROM proveedor                        WHERE num_proveedor IN ('P0001','P0002','P0003','P0004','P0005');
 ```

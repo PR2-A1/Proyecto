@@ -1,7 +1,7 @@
 
 //Creedenciales para la red 
-pub const WIFI_SSID: &str = "PCGato";
-pub const WIFI_PASS: &str = "Coca12345";
+pub const WIFI_SSID: &str = "IGato";
+pub const WIFI_PASS: &str = "coca1235";
 
 //Credenciales para el MQTT
 pub const MQTT_URL: &str = "mqtt://broker.hivemq.com:1883";
@@ -45,8 +45,8 @@ pub const AMR_TOLVA_THRESHOLD: u64 = 2;
 pub const AMR_ARRIVAL_DELAY_SECS: u64 = 10;
 pub const AMR_WAREHOUSE_LOCATION: &str = "cobot_pick";
 
-pub const COBOT_PALLET_ID_BASE: u32 = 10;
-pub const COBOT_PALLET_COUNT: usize = 6;
+pub const COBOT_PALLET_ID_BASE: u32 = 1;
+pub const PALLET_CAPACITY: u64 = 12;
 
 
 //pub const MQTT_PUBLISH_INTERVAL_SECS: u64 = 5;

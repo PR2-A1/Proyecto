@@ -9,7 +9,7 @@ use tracing::{error, info, warn};
 
 #[derive(Debug, PartialEq, Eq)]
 struct BoxCompletedEvent {
-    caja_id: String,
+    id_caja: String,
     color_db: String,
     etiqueta: String,
     estado: bool,
@@ -19,18 +19,17 @@ struct BoxCompletedEvent {
 #[derive(Debug, PartialEq, Eq)]
 struct GenCommand {
     proveedor: Option<String>,
-    lote_id: String,
+    id_lote: String,
     quantity: i32,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 struct CajaPaletizadaEvent {
-    caja_id: String,
-    palet_id: i32,
-    codigo_palet: String,
-    color_id: String,
-    estado: bool,
-    operario_id: Option<i32>,
+    id_caja:     String,
+    id_palet:    String,
+    id_color:    String,
+    estado:      bool,
+    id_operario: Option<String>,
 }
 
 fn env_or_default(key: &str, default: &str) -> String {
@@ -61,7 +60,7 @@ fn read_database_url_from_env_file() -> Option<String> {
 }
 
 fn parse_box_completed_event(value: &Value) -> Option<BoxCompletedEvent> {
-    let caja_id = value.get("caja_id").and_then(|v| v.as_str()).unwrap_or("");
+    let id_caja = value.get("id_caja").and_then(|v| v.as_str()).unwrap_or("");
     let color = value.get("color").and_then(|v| v.as_str()).unwrap_or("");
     let etiqueta = value
         .get("codigo_etiqueta")
@@ -72,7 +71,7 @@ fn parse_box_completed_event(value: &Value) -> Option<BoxCompletedEvent> {
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
 
-    if caja_id.is_empty() || color.is_empty() || etiqueta.is_empty() {
+    if id_caja.is_empty() || color.is_empty() || etiqueta.is_empty() {
         return None;
     }
 
@@ -90,7 +89,7 @@ fn parse_box_completed_event(value: &Value) -> Option<BoxCompletedEvent> {
         .unwrap_or_default();
 
     Some(BoxCompletedEvent {
-        caja_id: caja_id.to_string(),
+        id_caja: id_caja.to_string(),
         color_db: color.to_ascii_uppercase(),
         etiqueta: etiqueta.to_string(),
         estado,
@@ -104,48 +103,46 @@ fn parse_gen_command(value: &Value) -> Option<GenCommand> {
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
-    let lote_id = value
-        .get("lote_id")
+    let id_lote = value
+        .get("id_lote")
         .and_then(|v| v.as_str())
         .or_else(|| value.get("lote").and_then(|v| v.as_str()))
         .unwrap_or("");
     let quantity = value.get("quantity").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
 
-    if lote_id.is_empty() || quantity <= 0 {
+    if id_lote.is_empty() || quantity <= 0 {
         return None;
     }
 
     Some(GenCommand {
         proveedor,
-        lote_id: lote_id.to_string(),
+        id_lote: id_lote.to_string(),
         quantity,
     })
 }
 
 fn parse_caja_paletizada(value: &Value) -> Option<CajaPaletizadaEvent> {
-    let caja_id = value.get("caja_id").and_then(|v| v.as_str()).unwrap_or("");
-    let palet_id = value.get("palet_id").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-    let codigo_palet = value.get("codigo_palet").and_then(|v| v.as_str()).unwrap_or("");
-    let color_id = value.get("color_id").and_then(|v| v.as_str()).unwrap_or("");
-    let estado = value.get("estado").and_then(|v| v.as_bool()).unwrap_or(false);
+    let id_caja  = value.get("id_caja").and_then(|v| v.as_str()).unwrap_or("");
+    let id_palet = value.get("id_palet").and_then(|v| v.as_str()).unwrap_or("");
+    let id_color = value.get("id_color").and_then(|v| v.as_str()).unwrap_or("");
+    let estado   = value.get("estado").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    if caja_id.is_empty() || palet_id <= 0 || codigo_palet.is_empty() || color_id.is_empty() {
+    if id_caja.is_empty() || id_palet.is_empty() || id_color.is_empty() {
         return None;
     }
 
-    let operario_id = if estado {
-        value.get("operario_id").and_then(|v| v.as_i64()).map(|v| v as i32)
+    let id_operario = if estado {
+        value.get("id_operario").and_then(|v| v.as_str()).map(|v| v.to_string())
     } else {
         None
     };
 
     Some(CajaPaletizadaEvent {
-        caja_id: caja_id.to_string(),
-        palet_id,
-        codigo_palet: codigo_palet.to_string(),
-        color_id: color_id.to_string(),
+        id_caja:  id_caja.to_string(),
+        id_palet: id_palet.to_string(),
+        id_color: id_color.to_string(),
         estado,
-        operario_id,
+        id_operario,
     })
 }
 
@@ -195,9 +192,9 @@ async fn main() -> Result<()> {
 
     let insert_caja_stmt = pg
         .prepare(
-            "INSERT INTO caja (caja_id, color, codigo_etiqueta, estado, palet_id) \
+            "INSERT INTO caja (id_caja, color, codigo_etiqueta, estado, id_palet) \
              VALUES ($1, $2, $3, $4, NULL) \
-             ON CONFLICT (caja_id) DO UPDATE \
+             ON CONFLICT (id_caja) DO UPDATE \
              SET color = EXCLUDED.color, \
                  codigo_etiqueta = EXCLUDED.codigo_etiqueta, \
                  estado = EXCLUDED.estado",
@@ -206,44 +203,44 @@ async fn main() -> Result<()> {
 
     let insert_material_caja_stmt = pg
         .prepare(
-            "INSERT INTO material_caja (lote_id, caja_id) \
+            "INSERT INTO material_caja (lote, id_caja) \
              VALUES ($1, $2) \
-             ON CONFLICT (lote_id, caja_id) DO NOTHING",
+             ON CONFLICT (lote, id_caja) DO NOTHING",
         )
         .await?;
 
     let insert_lote_stmt = pg
         .prepare(
-            "INSERT INTO material_no_clasificado \
-             (lote_id, fecha_inicio, total_tapas_entrada, total_tapas_clasificadas, observaciones) \
+            "INSERT INTO lote \
+             (id_lote, fecha_inicio, total_tapas_entrada, total_tapas_clasificadas, observaciones) \
              VALUES ($1, CURRENT_DATE, $2, 0, NULL) \
-             ON CONFLICT (lote_id) DO NOTHING",
+             ON CONFLICT (id_lote) DO NOTHING",
         )
         .await?;
 
     let insert_proveedor_material_stmt = pg
         .prepare(
-            "INSERT INTO proveedor_material (proveedor, lote_id) \
+            "INSERT INTO proveedor_material (proveedor, lote) \
              VALUES ($1, $2) \
-             ON CONFLICT (proveedor, lote_id) DO NOTHING",
+             ON CONFLICT (proveedor, lote) DO NOTHING",
         )
         .await?;
 
     let upsert_palet_stmt = pg
         .prepare(
-            "INSERT INTO palet (palet_id, codigo_palet, color_id, estado) \
-             VALUES ($1, $2, $3, $4) \
-             ON CONFLICT (palet_id) DO UPDATE \
+            "INSERT INTO palet (id_palet, id_color, estado) \
+             VALUES ($1, $2, $3) \
+             ON CONFLICT (id_palet) DO UPDATE \
              SET estado = EXCLUDED.estado",
         )
         .await?;
 
     let link_caja_palet_stmt = pg
-        .prepare("UPDATE caja SET palet_id = $1 WHERE caja_id = $2")
+        .prepare("UPDATE caja SET id_palet = $1 WHERE id_caja = $2")
         .await?;
 
     let set_operario_cierre_stmt = pg
-        .prepare("UPDATE palet SET operario_cierre_id = $1 WHERE palet_id = $2")
+        .prepare("UPDATE palet SET id_operario = $1 WHERE id_palet = $2")
         .await?;
 
     info!("Bridge listo, esperando mensajes...");
@@ -264,14 +261,14 @@ async fn main() -> Result<()> {
                             if let Some(event) = parse_box_completed_event(&value) {
                                 info!(
                                     "Insertando caja: id={} color={} etiqueta={} estado={}",
-                                    event.caja_id, event.color_db, event.etiqueta, event.estado
+                                    event.id_caja, event.color_db, event.etiqueta, event.estado
                                 );
 
                                 match pg
                                     .execute(
                                         &insert_caja_stmt,
                                         &[
-                                            &event.caja_id,
+                                            &event.id_caja,
                                             &event.color_db,
                                             &event.etiqueta,
                                             &event.estado,
@@ -289,13 +286,13 @@ async fn main() -> Result<()> {
                                     match pg
                                         .execute(
                                             &insert_material_caja_stmt,
-                                            &[&lote_id, &event.caja_id],
+                                            &[&lote_id, &event.id_caja],
                                         )
                                         .await
                                     {
                                         Ok(_) => info!(
                                             "material_caja insertado: lote={} caja={}",
-                                            lote_id, event.caja_id
+                                            lote_id, event.id_caja
                                         ),
                                         Err(e) => {
                                             error!("Error insertando material_caja: {}", e)
@@ -308,37 +305,37 @@ async fn main() -> Result<()> {
                         } else if event.eq_ignore_ascii_case("caja_paletizada") {
                             if let Some(ev) = parse_caja_paletizada(&value) {
                                 info!(
-                                    "Paletizando caja: caja={} palet={} codigo={} estado={}",
-                                    ev.caja_id, ev.palet_id, ev.codigo_palet, ev.estado
+                                    "Paletizando caja: caja={} palet={} estado={}",
+                                    ev.id_caja, ev.id_palet, ev.estado
                                 );
 
                                 match pg
                                     .execute(
                                         &upsert_palet_stmt,
-                                        &[&ev.palet_id, &ev.codigo_palet, &ev.color_id, &ev.estado],
+                                        &[&ev.id_palet, &ev.id_color, &ev.estado],
                                     )
                                     .await
                                 {
-                                    Ok(_) => info!("Palet upserted: id={}", ev.palet_id),
+                                    Ok(_) => info!("Palet upserted: id={}", ev.id_palet),
                                     Err(e) => error!("Error upsertando palet: {:?}", e),
                                 }
 
                                 match pg
-                                    .execute(&link_caja_palet_stmt, &[&ev.palet_id, &ev.caja_id])
+                                    .execute(&link_caja_palet_stmt, &[&ev.id_palet, &ev.id_caja])
                                     .await
                                 {
-                                    Ok(rows) => info!("Caja {} vinculada a palet {} ({} filas)", ev.caja_id, ev.palet_id, rows),
+                                    Ok(rows) => info!("Caja {} vinculada a palet {} ({} filas)", ev.id_caja, ev.id_palet, rows),
                                     Err(e) => error!("Error vinculando caja a palet: {:?}", e),
                                 }
 
                                 if ev.estado {
-                                    if let Some(operario_id) = ev.operario_id {
-                                        match pg.execute(&set_operario_cierre_stmt, &[&operario_id, &ev.palet_id]).await {
-                                            Ok(_) => info!("Operario {} asignado como cierre del palet {}", operario_id, ev.palet_id),
+                                    if let Some(ref operario_id) = ev.id_operario {
+                                        match pg.execute(&set_operario_cierre_stmt, &[operario_id, &ev.id_palet]).await {
+                                            Ok(_) => info!("Operario {} asignado como cierre del palet {}", operario_id, ev.id_palet),
                                             Err(e) => error!("Error asignando operario_cierre: {:?}", e),
                                         }
                                     } else {
-                                        warn!("Palet {} cerrado sin operario_id — no se asigna cierre", ev.palet_id);
+                                        warn!("Palet {} cerrado sin id_operario — no se asigna cierre", ev.id_palet);
                                     }
                                 }
                             } else {
@@ -362,13 +359,13 @@ async fn main() -> Result<()> {
                             if let Some(command) = parse_gen_command(&value) {
                                 info!(
                                     "Insertando lote: id={} quantity={} proveedor={:?}",
-                                    command.lote_id, command.quantity, command.proveedor
+                                    command.id_lote, command.quantity, command.proveedor
                                 );
 
                                 match pg
                                     .execute(
                                         &insert_lote_stmt,
-                                        &[&command.lote_id, &command.quantity],
+                                        &[&command.id_lote, &command.quantity],
                                     )
                                     .await
                                 {
@@ -380,7 +377,7 @@ async fn main() -> Result<()> {
                                     match pg
                                         .execute(
                                             &insert_proveedor_material_stmt,
-                                            &[proveedor, &command.lote_id],
+                                            &[proveedor, &command.id_lote],
                                         )
                                         .await
                                     {
@@ -391,7 +388,7 @@ async fn main() -> Result<()> {
                                     }
                                 }
                             } else {
-                                warn!("gen sin lote_id o quantity inválido: {}", payload);
+                                warn!("gen sin id_lote o quantity inválido: {}", payload);
                             }
                         } else {
                             warn!("Comando SCADA desconocido: {}", cmd);
@@ -408,16 +405,16 @@ async fn main() -> Result<()> {
                         info!("Pull request: query={}", query);
 
                         if query.eq_ignore_ascii_case("operarios") {
-                            match pg.query("SELECT operario_id, nombre, apellido FROM operario", &[]).await {
+                            match pg.query("SELECT id_operario, nombre, apellido FROM operario", &[]).await {
                                 Ok(rows) => {
                                     let operarios: Vec<serde_json::Value> = rows.iter().map(|r| {
-                                        let id: i32 = r.get(0);
-                                        let nombre: &str = r.get(1);
+                                        let id:       &str = r.get(0);
+                                        let nombre:   &str = r.get(1);
                                         let apellido: &str = r.get(2);
                                         serde_json::json!({
-                                            "operario_id": id,
-                                            "nombre": nombre,
-                                            "apellido": apellido,
+                                            "id_operario": id,
+                                            "nombre":      nombre,
+                                            "apellido":    apellido,
                                         })
                                     }).collect();
                                     let response = serde_json::json!({ "operarios": operarios }).to_string();
@@ -457,7 +454,7 @@ mod tests {
     fn parse_box_completed_event_normalizes_color_and_lotes() {
         let value = json!({
             "event": "box_completed",
-            "caja_id": "C0001",
+            "id_caja": "B0001",
             "color": "blue",
             "codigo_etiqueta": "ETQ0000001",
             "estado": false,
@@ -467,7 +464,7 @@ mod tests {
         assert_eq!(
             parse_box_completed_event(&value),
             Some(BoxCompletedEvent {
-                caja_id: "C0001".to_string(),
+                id_caja: "B0001".to_string(),
                 color_db: "BLUE".to_string(),
                 etiqueta: "ETQ0000001".to_string(),
                 estado: false,
@@ -479,7 +476,7 @@ mod tests {
     #[test]
     fn parse_box_completed_event_defaults_estado_to_true() {
         let value = json!({
-            "caja_id": "C0002",
+            "id_caja": "B0002",
             "color": "red",
             "codigo_etiqueta": "ETQ0000002"
         });
@@ -490,7 +487,7 @@ mod tests {
     #[test]
     fn parse_box_completed_event_rejects_missing_required_fields() {
         let value = json!({
-            "caja_id": "C0003",
+            "id_caja": "B0003",
             "color": "",
             "codigo_etiqueta": "ETQ0000003"
         });
@@ -511,7 +508,7 @@ mod tests {
             parse_gen_command(&value),
             Some(GenCommand {
                 proveedor: Some("P0001".to_string()),
-                lote_id: "L0001".to_string(),
+                id_lote: "L0001".to_string(),
                 quantity: 25,
             })
         );
@@ -521,11 +518,11 @@ mod tests {
     fn parse_gen_command_rejects_missing_lote_or_non_positive_quantity() {
         assert_eq!(parse_gen_command(&json!({"quantity": 1})), None);
         assert_eq!(
-            parse_gen_command(&json!({"lote_id": "L0001", "quantity": 0})),
+            parse_gen_command(&json!({"id_lote": "L0001", "quantity": 0})),
             None
         );
         assert_eq!(
-            parse_gen_command(&json!({"lote_id": "L0001", "quantity": -2})),
+            parse_gen_command(&json!({"id_lote": "L0001", "quantity": -2})),
             None
         );
     }

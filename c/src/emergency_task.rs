@@ -2,7 +2,7 @@ use anyhow::Result;
 use core::num::NonZeroU32;
 use esp_idf_hal::{
     delay::TickType,
-    gpio::{Gpio10, Gpio38, Gpio39, Gpio11, InterruptType, PinDriver, Pull},
+    gpio::{Gpio10, Gpio38, Gpio39, Gpio48, InterruptType, PinDriver, Pull},
     task::notification::Notification,
 };
 use serde_json::json;
@@ -21,7 +21,7 @@ pub fn run_emergency_task<'a>(
     emergency_pin: Gpio38,
     resume_pin: Gpio39,
     led_pin: Gpio10,
-    buzzer_pin: Gpio11,
+    buzzer_pin: Gpio48,
     emergency_stop: Arc<AtomicBool>,
 ) -> Result<()> {
     //Declaración de pines y variables para el manejo de la emergencia
@@ -83,11 +83,11 @@ pub fn run_emergency_task<'a>(
 
             if let Ok(mut mqtt_guard) = mqtt.lock() {
                 let source = pending_source.unwrap_or("mqtt_action");
-                let status = if current_state { "active" } else { "operative" };
+                let status = if current_state { "emergency_active" } else { "emergency_inactive" };
                 let payload = json!({
                     "status": status,
-                    "device": "ESP32-S3",
-                    "sensor": source
+                    "sensor": source,
+                    "device": "ESP32-S3"
                 })
                 .to_string();
                 mqtt_guard.publish_text(config::MQTT_TOPIC_EMERGENCY_STATUS, &payload);

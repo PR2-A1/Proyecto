@@ -19,6 +19,8 @@ use crate::{
     control_state::{ControlState, Mode, ExpectedTapa},
 };
 
+pub type PullSlot = Arc<Mutex<Option<SyncSender<String>>>>;
+
 //Estructura que almacena al cliente MQTT
 pub struct MqttManager<'a> {
     client: EspMqttClient<'a>,
@@ -31,6 +33,7 @@ impl<'a> MqttManager<'a> {
         control_state: Arc<Mutex<ControlState>>,
         emergency_stop: Arc<AtomicBool>,
         vision_tx: SyncSender<String>,
+        pull_slot: PullSlot,
         nvs: EspDefaultNvsPartition,
     ) -> Result<Self> {
 
@@ -99,9 +102,11 @@ impl<'a> MqttManager<'a> {
                                     if mode_str.eq_ignore_ascii_case("AUTO") {
                                         info!("Activando modo AUTO");
                                         state.mode = Mode::Auto;
+                                        state.id_lote = None;
                                     } else if mode_str.eq_ignore_ascii_case("MANUAL") {
                                         info!("Activando modo MANUAL");
                                         state.mode = Mode::Manual;
+                                        state.id_lote = None;
                                     }
                                 } else {
                                     error!("No se pudo lockear control_state para set_mode");
@@ -113,17 +118,17 @@ impl<'a> MqttManager<'a> {
                                 let quantity = value.get("quantity")
                                     .and_then(|v| v.as_u64())
                                     .unwrap_or(0) as u32;
-                                let lote_id = value
-                                    .get("lote_id")
+                                let id_lote = value
+                                    .get("id_lote")
                                     .and_then(|v| v.as_str())
                                     .or_else(|| value.get("lote").and_then(|v| v.as_str()))
                                     .unwrap_or("");
 
                                 if let Ok(mut state) = control_state.try_lock() {
-                                    let lote_value = if lote_id.is_empty() {
+                                    let lote_value = if id_lote.is_empty() {
                                         None
                                     } else {
-                                        Some(lote_id.to_string())
+                                        Some(id_lote.to_string())
                                     };
 
                                     if state.mode == Mode::Auto {
@@ -131,7 +136,7 @@ impl<'a> MqttManager<'a> {
                                         state.auto_target = quantity;
                                         state.auto_spawned = 0;
                                         state.auto_validated = 0;
-                                        state.lote_id = lote_value;
+                                        state.id_lote = lote_value;
                                         state.expected_tapa = None;
                                     } else if state.mode == Mode::Manual {
                                         let color_str = value.get("color")
@@ -147,7 +152,9 @@ impl<'a> MqttManager<'a> {
                                         state.manual_remaining = 1;
                                         state.manual_color = color_str.to_string();
                                         state.manual_spawn_pending = true;
-                                        state.lote_id = lote_value;
+                                        if state.id_lote.is_none() {
+                                            state.id_lote = lote_value;
+                                        }
                                         state.expected_tapa = Some(ExpectedTapa {
                                             color: color_str.to_string(),
                                             validated: false,
@@ -168,14 +175,14 @@ impl<'a> MqttManager<'a> {
                                     state.amr_pending_tolva = None;
                                     state.amr_arrived_tolva = None;
                                     state.amr_arrived_at = None;
-                                    state.amr_caja_id = None;
+                                    state.amr_id_caja = None;
                                     state.amr_caja_tolva = None;
                                     state.cobot_ready = false;
                                     state.cobot_in_progress = false;
                                     state.auto_target = 0;
                                     state.auto_spawned = 0;
                                     state.auto_validated = 0;
-                                    state.lote_id = None;
+                                    state.id_lote = None;
 
                                     if let Err(err) = state.save_tolva_counts(&nvs) {
                                         error!("No se pudo guardar tolvas en NVS tras reset: {:?}", err);
@@ -210,6 +217,14 @@ impl<'a> MqttManager<'a> {
                             }
                         } else {
                             error!("EMERGENCIA action sin JSON valido: {}", mensaje);
+                        }
+                    }
+                    config::MQTT_SUB_TOPIC_DB_PULL_RESPONSE => {
+                        info!("db/pull/response: {}", mensaje);
+                        if let Ok(slot) = pull_slot.try_lock() {
+                            if let Some(tx) = slot.as_ref() {
+                                let _ = tx.try_send(mensaje.to_string());
+                            }
                         }
                     }
                     config::MQTT_TOPIC_AMR_STATUS => {
@@ -271,16 +286,16 @@ fn handle_scada_status_message(
             return;
         }
 
-        let cap_id = value.get("cap_id").and_then(|v| v.as_str()).unwrap_or("");
-        if cap_id.is_empty() {
-            error!("SCADA_STATUS sin cap_id: {}", mensaje);
+        let id_cap = value.get("id_cap").and_then(|v| v.as_str()).unwrap_or("");
+        if id_cap.is_empty() {
+            error!("SCADA_STATUS sin id_cap: {}", mensaje);
             return;
         }
 
         let tolva = value.get("tolva").and_then(|v| v.as_str()).unwrap_or("");
         if let Some(index) = parse_tolva_index(tolva) {
             if let Ok(mut state) = control_state.try_lock() {
-                match state.pending_tapas.remove(cap_id) {
+                match state.pending_tapas.remove(id_cap) {
                     Some(expected_index) if expected_index == index => {
                         if state.pending_tolva_counts[index] > 0 {
                             state.pending_tolva_counts[index] -= 1;
@@ -295,15 +310,15 @@ fn handle_scada_status_message(
                     }
                     Some(expected_index) => {
                         error!(
-                            "cap_id {} esperaba TOLVA_{}, pero llego {}",
-                            cap_id,
+                            "id_cap {} esperaba TOLVA_{}, pero llego {}",
+                            id_cap,
                             expected_index + 1,
                             tolva
                         );
-                        state.pending_tapas.insert(cap_id.to_string(), expected_index);
+                        state.pending_tapas.insert(id_cap.to_string(), expected_index);
                     }
                     None => {
-                        error!("cap_id {} no encontrado en pendientes", cap_id);
+                        error!("id_cap {} no encontrado en pendientes", id_cap);
                     }
                 }
             } else {
@@ -348,15 +363,10 @@ fn handle_amr_status_message(mensaje: &str, control_state: &Arc<Mutex<ControlSta
         }
         if let Some(index) = parse_amr_location_index(location) {
             if let Ok(mut state) = control_state.try_lock() {
-                let caja_id = value.get("caja_id").and_then(|v| v.as_str()).unwrap_or("");
                 match state.amr_pending_tolva {
                     Some(pending_index) if pending_index == index => {
                         state.amr_arrived_tolva = Some(index);
                         state.amr_arrived_at = Some(std::time::Instant::now());
-                        if !caja_id.is_empty() {
-                            state.amr_caja_id = Some(caja_id.to_string());
-                            state.amr_caja_tolva = Some(index);
-                        }
                     }
                     Some(pending_index) => {
                         error!(
@@ -394,22 +404,22 @@ fn parse_amr_location_index(location: &str) -> Option<usize> {
 fn handle_cobot_status_message(mensaje: &str, control_state: &Arc<Mutex<ControlState>>) {
     if let Ok(value) = serde_json::from_str::<Value>(mensaje) {
         let status = value.get("status").and_then(|v| v.as_str()).unwrap_or("");
-        if !status.eq_ignore_ascii_case("FINISHED") {
+        if !status.eq_ignore_ascii_case("completed") {
             return;
         }
 
-        let id_pallet = value.get("id_pallet").and_then(|v| v.as_u64());
-        if let Some(id) = id_pallet {
-            let index = id as i64 - config::COBOT_PALLET_ID_BASE as i64;
-            if index >= 0 && (index as usize) < config::COBOT_PALLET_COUNT {
-                if let Ok(mut state) = control_state.try_lock() {
-                    state.pallet_counts[index as usize] += 1;
-                    state.cobot_in_progress = false;
-                } else {
-                    error!("No se pudo lockear control_state para cobot status");
+        let id_pallet = value.get("id_pallet").and_then(|v| v.as_str());
+        if let Some(id_str) = id_pallet {
+            if let Ok(mut state) = control_state.try_lock() {
+                let count = *state.pallet_counts.entry(id_str.to_string()).and_modify(|c| *c += 1).or_insert(1);
+                if count >= config::PALLET_CAPACITY {
+                    state.cobot_next_pallet += 1;
+                    info!("Pallet {} lleno ({} cajas) — siguiente pallet P{:04}", id_str, count, state.cobot_next_pallet);
                 }
+                state.cobot_completed_event = Some(id_str.to_string());
+                state.cobot_in_progress = false;
             } else {
-                error!("id_pallet fuera de rango: {}", id);
+                error!("No se pudo lockear control_state para cobot status");
             }
         } else {
             error!("cobot status sin id_pallet: {}", mensaje);

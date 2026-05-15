@@ -52,19 +52,19 @@ sequenceDiagram
     participant ESP32v as ESP32 vision-task
     participant Delta
 
-    SCADA->>ESP32: gen (lote_id, color, quantity)
-    Note over ESP32: Genera cap_id único ("cap_42")
-    ESP32->>PythonBridge: spawn {cmd, color, cap_id}
+    SCADA->>ESP32: gen (id_lote, color, quantity)
+    Note over ESP32: Genera id_cap único ("C0042")
+    ESP32->>PythonBridge: spawn {cmd, color, id_cap}
     PythonBridge->>PythonBridge: RDK.Copy+Paste → crea tapa en escena
-    PythonBridge->>ESP32v: camera/data {x, y, color, precision, cap_id}
+    PythonBridge->>ESP32v: camera/data {x, y, color, precision, id_cap}
 
     alt precision > 0.95
         ESP32v->>ESP32: VisionSample (canal interno)
         Note over ESP32: Valida color según modo
         alt color válido y tolva con espacio
-            ESP32->>Delta: pick {x, y, color, tolva, cap_id}
+            ESP32->>Delta: pick {x, y, color, tolva, id_cap}
             Delta->>Delta: Mueve tapa a tolva
-            SCADA->>ESP32: done {cap_id, tolva}
+            SCADA->>ESP32: done {id_cap, tolva}
             Note over ESP32: tolva_counts[i]++ · guarda NVS
         else tolva llena o color incorrecto
             Note over ESP32: Descarta tapa — no envía PICK
@@ -81,7 +81,7 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     A["tolva_counts[i] ≥ 2\n(umbral alcanzado)"]
-    B["ESP32 genera caja_id\namr_pending_tolva = i"]
+    B["ESP32 genera id_caja\namr_pending_tolva = i"]
     C["Publica goto tolva_N → AMR"]
     D["AMR publica ARRIVED\nlocation: TOLVA_N"]
     E["ESP32 registra llegada\ninicia espera 10 s"]
@@ -91,12 +91,12 @@ flowchart TD
     I["AMR publica ARRIVED\nlocation: cobot_pick"]
     J["cobot_ready = true"]
     K["ESP32 publica start → Cobot\ncobot_in_progress = true"]
-    L["Cobot publica FINISHED\nid_pallet: N"]
-    M{"pallet_counts[i] ≥ 12?"}
+    L["Cobot publica completed\nid_pallet: N"]
+    M{"current_pallet_count ≥ PALLET_CAPACITY?"}
     N["ESP32 publica db/pull\nquery: operarios"]
     O["Bridge responde en\ndb/pull/response"]
-    P["ESP32 elige operario\nPublica caja_paletizada\nestado: true, operario_id"]
-    Q["Publica pallet_full → SCADA\npallet_counts[i] = 0"]
+    P["ESP32 elige operario\nPublica caja_paletizada\nestado: true, id_operario"]
+    Q["Publica pallet_full → SCADA\ncurrent_pallet_count = 0, cobot_next_pallet++"]
     R["Publica caja_paletizada\nestado: false"]
     S["Bridge Rust\nupsert palet\nvincula caja\nasigna operario si cierre"]
     T["cobot_in_progress = false"]
@@ -150,21 +150,21 @@ sequenceDiagram
     participant SCADA
 
     loop Hasta 12 cajas
-        Cobot->>ESP32: finished {id_pallet: 10}
-        ESP32->>ESP32: pallet_counts[i]++
+        Cobot->>ESP32: completed {id_pallet: "P0001"}
+        ESP32->>ESP32: current_pallet_count++
         ESP32->>Bridge: db/push · caja_paletizada {estado: false}
-        Bridge->>DB: upsert palet + UPDATE caja.palet_id
+        Bridge->>DB: upsert palet + UPDATE caja.id_palet
     end
 
     Note over ESP32: pallet_counts[i] = 12 → cierre
     ESP32->>Bridge: db/pull · {query: "operarios"}
-    Bridge->>DB: SELECT operario_id, nombre, apellido FROM operario
+    Bridge->>DB: SELECT id_operario, nombre, apellido FROM operario
     DB-->>Bridge: filas
     Bridge-->>ESP32: db/pull/response · {operarios: [...]}
-    ESP32->>ESP32: elige operario_id aleatoriamente
-    ESP32->>Bridge: db/push · caja_paletizada {estado: true, operario_id: 3}
-    Bridge->>DB: upsert palet (estado=true)\nUPDATE palet SET operario_cierre_id=3
-    ESP32->>SCADA: scada/status · pallet_full {palet_id: 10}
+    ESP32->>ESP32: elige id_operario aleatoriamente
+    ESP32->>Bridge: db/push · caja_paletizada {estado: true, id_operario: "OP003"}
+    Bridge->>DB: upsert palet (estado=true)\nUPDATE palet SET id_operario="OP003"
+    ESP32->>SCADA: scada/status · pallet_full {id_palet: "P0001"}
     ESP32->>ESP32: pallet_counts[i] = 0\nrota al siguiente pallet
 ```
 
@@ -181,7 +181,7 @@ flowchart LR
         t3["amr/action\ngoto"]
         t4["cobot/action\nstart"]
         t5["scada/status\nestado / batch_complete / pallet_full"]
-        t6["emergency/status\nactive / operative"]
+        t6["emergency/status\nemergency_active / emergency_inactive"]
         t7["db/push\nBOX_COMPLETED / caja_paletizada"]
         t8["db/pull\nquery: operarios"]
     end
@@ -192,7 +192,7 @@ flowchart LR
         s2["scada/action\ngen / set_mode / status / reset"]
         s3["scada/status\ndone (confirmación Delta)"]
         s4["amr/status\narrived"]
-        s5["cobot/status\nfinished"]
+        s5["cobot/status\ncompleted"]
         s6["emergency/action\nestop / resume"]
         s7["db/pull/response"]
     end
