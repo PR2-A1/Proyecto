@@ -1,25 +1,30 @@
-from robodk import robolink, robomath
-import time
-import random
-
-# Start the RoboDK API
+from robodk import robolink    # RoboDK API
+from robodk import robomath    # Robot toolbox
+from robolink import *
 RDK = robolink.Robolink()
 
-colors = [ [1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0], #Rojo, verde, azul
-           [1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 1.0], [1.0, 0.5, 0.0, 1.0]] #Blanco, negro, naranja
+import random, math
+
+colors = {
+	"red": [1.0, 0.0, 0.0, 1.0],
+	"green": [0.0, 1.0, 0.0, 1.0],
+	"blue": [0.0, 0.0, 1.0, 1.0],
+	"yellow": [1.0, 1.0, 0.0, 1.0],
+	"orange": [1.0, 0.5, 0.0, 1.0],
+	"white": [1.0, 1.0, 1.0, 1.0]
+} 
 
 tapon_template = RDK.Item('tapa_template')
+estacion_frame = RDK.Item('frame_spawn_objetos', ITEM_TYPE_FRAME)
 
 #Función de spawn de tapones / tapas
-def spawn_tapon():
-    tapon_nuevo = tapon_template.Copy()
-    tapon_nuevo.setName('tapon_' + str(time.time()))
-    y = random.uniform(-178.0, 255.0)
-    tapon_nuevo.setPose(robomath.transl(-5475.0, y, 1453.9))
-    tapon_nuevo.setColor(random.choice(colors))
+def spawn_tapon(color, cap_id):
+	tapon_template.Copy()
+	tapon_nuevo = tapon_template.Paste()
+	tapon_nuevo.setParentStatic(estacion_frame) 
+	tapon_nuevo.setName(cap_id)
+	y = random.uniform(-184.416, 291.584)
+	tapon_nuevo.setPoseAbs(robomath.transl(-5526.352, y, 1455.871) * robomath.roty(-math.pi/2))
+	tapon_nuevo.setColor(colors[color])
+	tapon_nuevo.setVisible(True)
 
-
-def main():
-    while True:
-        spawn_tapon()
-        time.sleep(3)

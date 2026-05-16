@@ -12,12 +12,6 @@ velocidad = 5.0
 posicion_actual = 0.0
 posicion_maxima = 20000.0
 
-
-for item in RDK.ItemList():
-    if item.Name().startswith("tapon_"):
-        item.Delete()
-
-
 while True:
     #Movimiento cinta (creditos a ETM97)
     posicion_actual += velocidad
@@ -30,7 +24,7 @@ while True:
         
         active_objects = RDK.ItemList()
         for i in active_objects:
-            if i.Name().startswith("tapon_"):
+            if i.Name().startswith("C"):
                 i.setPose( i.Pose() * robomath.transl(2000.0, 0.0, 0.0))
         frame_movimiento.setPose(robomath.transl(0.0, 0.0, 0.0))
         
