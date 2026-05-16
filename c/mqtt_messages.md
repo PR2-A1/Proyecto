@@ -13,26 +13,13 @@ Broker: `broker.hivemq.com:1883`
 | `giirob/pr2-A1/devices/scada/action` | SCADA | ESP32 | `{"cmd":"set_mode","mode":"auto"}` | Cambiar a modo Auto |
 | `giirob/pr2-A1/devices/scada/action` | SCADA | ESP32 | `{"cmd":"set_mode","mode":"manual"}` | Cambiar a modo Manual |
 | `giirob/pr2-A1/devices/scada/action` | SCADA | ESP32 | `{"cmd":"status"}` | Solicitar estado del sistema |
-| `giirob/pr2-A1/devices/scada/action` | SCADA | ESP32 | `{"cmd":"reset"}` | Reiniciar contadores de tolvas y lote |
-| `giirob/pr2-A1/devices/scada/status` | ESP32 | SCADA | `{"mode":"auto","id_lote":"L0042","total_processed":47,"tolvas":{...},"pallets":{...},...}` | Estado completo del sistema |
-| `giirob/pr2-A1/devices/scada/status` | SCADA | ESP32 | `{"cmd":"done","id_cap":"C0005","tolva":"TOLVA_3"}` | Confirmar que Delta depositó la tapa en la tolva |
-| `giirob/pr2-A1/devices/scada/status` | ESP32 | SCADA | `{"event":"batch_complete","total":100,...}` | Lote de producción completado |
+| `giirob/pr2-A1/devices/scada/action` | SCADA | ESP32 | `{"cmd":"reset"}` | Reiniciar todos los contadores y limpiar BD |
+| `giirob/pr2-A1/devices/scada/status` | ESP32 | SCADA | `{"mode":"auto","id_lote":"L0042","total_processed":47,"tolvas":{...},"pallets":{...},"device":"ESP32-S3","sensor":"scada"}` | Estado completo del sistema |
+| `giirob/pr2-A1/devices/scada/status` | ESP32 | SCADA | `{"event":"batch_complete","message":"Lote de producción completado","total":100,"device":"ESP32-S3","sensor":"scada"}` | Lote de producción completado |
+| `giirob/pr2-A1/devices/scada/status` | ESP32 | SCADA | `{"event":"pallet_full","id_palet":"P0001","color":"red","device":"ESP32-S3","sensor":"scada"}` | Pallet lleno — avisar al operario |
 
 > `id_lote` también acepta la clave `lote`. El campo `color` solo aplica en modo Manual.  
-> El estado completo incluye: `mode`, `id_lote`, `total_processed`, `auto_target`, `auto_spawned`, `auto_validated`, `manual_remaining`, `expected_color`, `amr_pending_tolva`, `amr_arrived_tolva`, `amr_wait_seconds`, `pallets` (PALLET_1–6), `tolvas` (TOLVA_1–6).
-
----
-
-## Visión y clasificación (Cámara → Delta)
-
-| Topic | Emisor | Receptor | Mensaje | Motivo |
-|---|---|---|---|---|
-| `giirob/pr2-A1/devices/camera/data` | Cámara | ESP32 | `{"x":1.2,"y":3.4,"color":"red","precision":0.97,"id_cap":"C0001"}` | Tapa detectada en el campo visual |
-| `giirob/pr2-A1/devices/delta/action` | ESP32 | Delta | `{"cmd":"pick","x":1.2,"y":3.4,"color":"red","tolva":"tolva_1","id_cap":"C0001","reason":"..."}` | Recoger tapa y depositarla en la tolva indicada |
-
-> Las detecciones con `precision` ≤ 0.95 se ignoran.  
-> El `id_cap` siempre está presente — lo genera el ESP32 en el spawn y RoboDK lo reenvía en la detección de cámara.  
-> No se envía `pick` si la tolva ya tiene `tolva_counts + pending ≥ umbral` (protección de rebalsamiento).
+> El estado completo incluye: `mode`, `id_lote`, `total_processed`, `auto_target`, `auto_spawned`, `auto_validated`, `manual_remaining`, `expected_color`, `amr_pending_tolva`, `amr_arrived_tolva`, `amr_wait_seconds`, `pallets` (por color: red/yellow/green/white/orange/blue, cada uno con `id_pallet` y `boxes`), `tolvas` (TOLVA_1–6).
 
 ---
 
@@ -40,10 +27,22 @@ Broker: `broker.hivemq.com:1883`
 
 | Topic | Emisor | Receptor | Mensaje | Motivo |
 |---|---|---|---|---|
-| `giirob/pr2-A1/devices/robodk/action` | ESP32 | RoboDK | `{"cmd":"spawn","color":"blue","id_cap":"C0042"}` | Generar tapa en la simulación |
+| `giirob/pr2-A1/devices/robodk/action` | ESP32 | RoboDK | `{"cmd":"spawn","color":"blue","id_cap":"C0042","device":"ESP32-S3","sensor":"robodk","unit":"command"}` | Generar tapa en la simulación |
 
 > En modo Auto el color rota cíclicamente: `red → green → yellow → blue → white → orange → …`  
-> El ESP32 genera el `id_cap` antes del spawn; RoboDK lo incluye en la detección de cámara para trazabilidad completa.
+> El ESP32 genera el `id_cap` antes del spawn; RoboDK lo pasa al Delta que lo incluye en la confirmación para trazabilidad completa.
+
+---
+
+## Delta (clasificación)
+
+| Topic | Emisor | Receptor | Mensaje | Motivo |
+|---|---|---|---|---|
+| `giirob/pr2-A1/devices/delta/status` | Delta | ESP32 | `{"status":"completed","color":"red","id_cap":"C0042"}` | Tapa depositada en la tolva correspondiente |
+
+> El ESP32 incrementa `tolva_counts[color]` y `total_processed` al recibir este mensaje.  
+> `status` debe ser `"completed"` (case-insensitive); cualquier otro valor se ignora.  
+> Colores válidos: `red`, `yellow`, `green`, `white`, `orange`, `blue`.
 
 ---
 
@@ -51,15 +50,16 @@ Broker: `broker.hivemq.com:1883`
 
 | Topic | Emisor | Receptor | Mensaje | Motivo |
 |---|---|---|---|---|
-| `giirob/pr2-A1/devices/amr/action` | ESP32 | AMR | `{"cmd":"goto","location":"TOLVA_1"}` | Enviar AMR a recoger caja de la tolva llena |
-| `giirob/pr2-A1/devices/amr/action` | ESP32 | AMR | `{"cmd":"goto","location":"cobot_pick"}` | Llevar caja al área del cobot tras espera de 10 s |
-| `giirob/pr2-A1/devices/amr/status` | AMR | ESP32 | `{"status":"arrived","location":"TOLVA_1"}` | AMR llegó a la tolva — inicia espera de 10 s |
+| `giirob/pr2-A1/devices/amr/action` | ESP32 | AMR | `{"cmd":"goto","location":"TOLVA_1","device":"ESP32-S3","sensor":"amr","unit":"command"}` | Enviar AMR a recoger caja de la tolva llena |
+| `giirob/pr2-A1/devices/amr/action` | ESP32 | AMR | `{"cmd":"goto","location":"cobot_pick","device":"ESP32-S3","sensor":"amr","unit":"command"}` | Llevar caja al área del cobot tras espera de 6 s |
+| `giirob/pr2-A1/devices/amr/status` | AMR | ESP32 | `{"status":"arrived","location":"TOLVA_1"}` | AMR llegó a la tolva — inicia espera de 6 s |
 | `giirob/pr2-A1/devices/amr/status` | AMR | ESP32 | `{"status":"arrived","location":"cobot_pick"}` | AMR llegó al área del cobot — activa secuencia de paletizado |
 | `giirob/pr2-A1/devices/amr/status` | AMR | SCADA | `{"status":"active","location":"TOLVA_1"}` | AMR operativo en la posición indicada |
 | `giirob/pr2-A1/devices/amr/status` | AMR | SCADA | `{"status":"inactive","location":"TOLVA_1"}` | AMR inactivo o detenido |
 
-> `location` válidos: `TOLVA_1`–`TOLVA_6` y `cobot_pick`.  
-> El ESP32 solo procesa mensajes con `status: "arrived"`; los estados `active`/`inactive` son informativos para el SCADA.
+> `location` válidos: `TOLVA_1`–`TOLVA_6` y `cobot_pick` (case-insensitive).  
+> El ESP32 solo procesa mensajes con `status: "arrived"`; los estados `active`/`inactive` son informativos para el SCADA.  
+> Timeout AMR: si no llega en 120 s, se cancela el despacho y se libera `amr_pending_tolva`.
 
 ---
 
@@ -67,10 +67,12 @@ Broker: `broker.hivemq.com:1883`
 
 | Topic | Emisor | Receptor | Mensaje | Motivo |
 |---|---|---|---|---|
-| `giirob/pr2-A1/devices/cobot/action` | ESP32 | Cobot | `{"cmd":"start","id_pallet":"P0001","color":"red","boxes_stacked":0}` | Ordenar al cobot paletizar la caja en el pallet indicado |
+| `giirob/pr2-A1/devices/cobot/action` | ESP32 | Cobot | `{"cmd":"start","id_pallet":"P0001","color":"red","boxes_stacked":0,"device":"ESP32-S3","sensor":"cobot","unit":"command"}` | Ordenar al cobot paletizar la caja |
 | `giirob/pr2-A1/devices/cobot/status` | Cobot | ESP32 | `{"status":"completed","id_pallet":"P0001"}` | Caja depositada correctamente en el pallet |
 
-> `id_pallet` arranca en `P0001` e incrementa indefinidamente. Cada pallet se cierra al alcanzar `PALLET_CAPACITY` (12 cajas).
+> Hay un pallet activo por cada color (6 en total). `id_pallet` arranca en `P0001` e incrementa por color al llenarse.  
+> Cada pallet se cierra al alcanzar `PALLET_CAPACITY` (6 cajas).  
+> Timeout Cobot: si no responde en 60 s, se libera `cobot_in_progress` y se puede iniciar una nueva operación.
 
 ---
 
@@ -86,7 +88,7 @@ Broker: `broker.hivemq.com:1883`
 | `giirob/pr2-A1/system/emergency/status` | ESP32 | Todos | `{"status":"emergency_active","source":"emergency_button"}` | Emergencia activa — sistema detenido |
 | `giirob/pr2-A1/system/emergency/status` | ESP32 | Todos | `{"status":"emergency_inactive","source":"SCADA"}` | Emergencia desactivada — sistema reanudado |
 
-> `sensor` indica el origen: `"emergency_button"` (GPIO38), `"resume_button"` (GPIO39) o `"mqtt_action"` (comando MQTT).
+> `source` indica el origen: `"emergency_button"` (GPIO38), `"resume_button"` (GPIO39) o `"mqtt_action"`.
 
 ---
 
@@ -98,10 +100,9 @@ Broker: `broker.hivemq.com:1883`
 |---|---|---|---|---|
 | `giirob/pr2-A1/db/push` | ESP32 | Bridge | `{"event":"box_completed","id_caja":"B0012","color":"red","codigo_etiqueta":"ETQ0000003","estado":true,"lotes":["L0042"]}` | Persistir caja completada en PostgreSQL |
 | `giirob/pr2-A1/db/push` | ESP32 | Bridge | `{"event":"caja_paletizada","id_caja":"B0012","id_palet":"P0001","id_color":"RED","estado":false}` | Vincular caja a pallet (pallet aún abierto) |
-| `giirob/pr2-A1/db/push` | ESP32 | Bridge | `{"event":"caja_paletizada","id_caja":"B0012","id_palet":"P0001","id_color":"RED","estado":true,"id_operario":"OP003"}` | Vincular caja y cerrar pallet (12 cajas); ESP32 indica el operario de cierre |
-| `giirob/pr2-A1/devices/scada/status` | ESP32 | SCADA | `{"event":"pallet_full","id_palet":"P0001"}` | Aviso al operario de que el pallet está lleno |
-| `giirob/pr2-A1/devices/scada/action` | SCADA | Bridge | `{"cmd":"gen","id_lote":"L0042","quantity":500}` | Registrar nuevo lote en PostgreSQL |
-| `giirob/pr2-A1/devices/scada/action` | SCADA | Bridge | `{"cmd":"gen","id_lote":"L0042","proveedor":"P0003","quantity":500}` | Registrar lote con proveedor en PostgreSQL |
+| `giirob/pr2-A1/db/push` | ESP32 | Bridge | `{"event":"caja_paletizada","id_caja":"B0012","id_palet":"P0001","id_color":"RED","estado":true,"id_operario":"OP003"}` | Vincular caja y cerrar pallet (6 cajas); ESP32 indica el operario de cierre |
+| `giirob/pr2-A1/db/push` | ESP32 | Bridge | `{"event":"tapa_clasificada","id_lote":"L0042","cantidad":5}` | Actualizar `total_tapas_clasificadas` del lote activo |
+| `giirob/pr2-A1/db/push` | ESP32 | Bridge | `{"event":"reset","device":"ESP32-S3"}` | Borrar cajas, palets y material_caja de la BD |
 
 ### Consulta — `db/pull` / `db/pull/response`
 
@@ -112,4 +113,6 @@ Broker: `broker.hivemq.com:1883`
 
 > El ESP32 recibe la lista, escoge un operario y lo envía como `id_operario` en el evento `caja_paletizada`.  
 > El campo `color` se almacena en mayúsculas en la base de datos (`RED`, `BLUE`, etc.).  
-> `codigo_etiqueta` tiene formato `ETQ0000001` (CHAR 10).
+> `codigo_etiqueta` tiene formato `ETQ0000001` (CHAR 10).  
+> `tapa_clasificada` se publica en lotes acumulados (contador `tapas_clasificadas_pending`) cada 500 ms mientras haya un `id_lote` activo.  
+> El `reset` borra en cascada: `material_caja → caja → palet`.

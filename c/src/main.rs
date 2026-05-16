@@ -6,7 +6,6 @@ use esp_idf_svc::{
 use std::{
     sync::{
         atomic::AtomicBool,
-        mpsc::sync_channel,
         Arc,
         Mutex,
     },
@@ -32,6 +31,7 @@ fn main() -> anyhow::Result<()> {
     //Partición de NVS por defecto para conifuración Wi-Fi.
     let nvs = EspDefaultNvsPartition::take().unwrap();
     let nvs_wifi = nvs.clone();
+    let nvs_logic = nvs.clone();
 
     //Inicialización de recursos compartidos
     let wifi_ready = Arc::new(AtomicBool::new(false));
@@ -63,23 +63,21 @@ fn main() -> anyhow::Result<()> {
     let control_state = Arc::new(Mutex::new(state));
     let emergency_stop = Arc::new(AtomicBool::new(false));
     
-    let (vision_tx, vision_rx) = sync_channel::<String>(128);
     let pull_slot = Arc::new(Mutex::new(None::<std::sync::mpsc::SyncSender<String>>));
 
     let mqtt = Arc::new(Mutex::new(mqtt_manager::MqttManager::connect_and_subscribe_with_state(
         Arc::clone(&control_state),
         Arc::clone(&emergency_stop),
-        vision_tx,
         Arc::clone(&pull_slot),
         nvs,
     )?));
 
     let _logic_handle = logic_task::spawn_logic_task(
         Arc::clone(&mqtt),
-        vision_rx,
         Arc::clone(&emergency_stop),
         Arc::clone(&control_state),
         pull_slot,
+        nvs_logic,
     )?;
 
     //Tarea principal gestiona la emergencia.

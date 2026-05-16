@@ -1,9 +1,7 @@
-use crate::config;
 use esp_idf_svc::{
     nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault},
     sys::EspError,
 };
-use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -14,7 +12,6 @@ pub enum Mode {
 #[derive(Clone, Debug)]
 pub struct ExpectedTapa {
     pub color: String,
-    pub validated: bool,
 }
 
 #[derive(Debug)]
@@ -30,22 +27,25 @@ pub struct ControlState {
     pub expected_tapa: Option<ExpectedTapa>,
     pub total_processed: u64,
     pub tolva_counts: [u64; 6],
-    pub pending_tolva_counts: [u64; 6],
     pub amr_pending_tolva: Option<usize>,
+    pub amr_dispatched_at: Option<std::time::Instant>,
     pub amr_arrived_tolva: Option<usize>,
     pub amr_arrived_at: Option<std::time::Instant>,
     pub amr_id_caja: Option<String>,
     pub amr_caja_tolva: Option<usize>,
     pub cobot_ready: bool,
     pub cobot_in_progress: bool,
-    pub cobot_next_pallet: u32,
+    pub cobot_started_at: Option<std::time::Instant>,
+    pub cobot_next_pallet: [u32; 6],     // pallet activo por color (red=0..blue=5)
     pub cobot_pending_color: Option<String>,
     pub cobot_pending_caja: Option<String>,
     pub cobot_active_color: Option<String>,
     pub cobot_completed_event: Option<String>,
-    pub pallet_counts: HashMap<String, u64>,
+    pub pallet_counts: [u64; 6],         // cajas en pallet actual por color
     pub status_requested: bool,
-    pub pending_tapas: HashMap<String, usize>,
+    pub batch_complete_pending: bool,
+    pub reset_db_pending: bool,
+    pub tapas_clasificadas_pending: u32,
 }
 
 impl Default for ControlState {
@@ -62,29 +62,32 @@ impl Default for ControlState {
             expected_tapa: None,
             total_processed: 0,
             tolva_counts: [0; 6],
-            pending_tolva_counts: [0; 6],
             amr_pending_tolva: None,
+            amr_dispatched_at: None,
             amr_arrived_tolva: None,
             amr_arrived_at: None,
             amr_id_caja: None,
             amr_caja_tolva: None,
             cobot_ready: false,
             cobot_in_progress: false,
-            cobot_next_pallet: config::COBOT_PALLET_ID_BASE,
+            cobot_started_at: None,
+            cobot_next_pallet: [1, 2, 3, 4, 5, 6],
             cobot_pending_color: None,
             cobot_pending_caja: None,
             cobot_active_color: None,
             cobot_completed_event: None,
-            pallet_counts: HashMap::new(),
+            pallet_counts: [0; 6],
             status_requested: false,
-            pending_tapas: HashMap::new(),
+            batch_complete_pending: false,
+            reset_db_pending: false,
+            tapas_clasificadas_pending: 0,
         }
     }
 }
 
 impl ControlState {
     pub fn save_tolva_counts(&self, nvs: &EspDefaultNvsPartition) -> Result<(), EspError> {
-        let nvs = EspNvs::<NvsDefault>::new(nvs.clone(), "tolva_counts", false)?;
+        let nvs = EspNvs::<NvsDefault>::new(nvs.clone(), "tolva_counts", true)?;
         for (index, count) in self.tolva_counts.iter().enumerate() {
             let key = format!("tolva_{}", index + 1);
             nvs.set_u64(&key, *count)?;
@@ -99,7 +102,7 @@ impl ControlState {
     }
 
     pub fn load_tolva_counts(nvs: &EspDefaultNvsPartition) -> Result<[u64; 6], EspError> {
-        let nvs = EspNvs::<NvsDefault>::new(nvs.clone(), "tolva_counts", false)?;
+        let nvs = EspNvs::<NvsDefault>::new(nvs.clone(), "tolva_counts", true)?;
         let mut counts = [0u64; 6];
         for (index, count) in counts.iter_mut().enumerate() {
             let key = format!("tolva_{}", index + 1);

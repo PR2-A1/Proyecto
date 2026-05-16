@@ -341,6 +341,35 @@ async fn main() -> Result<()> {
                             } else {
                                 warn!("caja_paletizada sin datos requeridos: {}", payload);
                             }
+                        } else if event.eq_ignore_ascii_case("tapa_clasificada") {
+                            let id_lote  = val.get("id_lote").and_then(|v| v.as_str()).unwrap_or("");
+                            let cantidad = val.get("cantidad").and_then(|v| v.as_i64()).unwrap_or(1) as i32;
+                            if id_lote.is_empty() {
+                                warn!("tapa_clasificada sin id_lote: {}", payload);
+                            } else {
+                                match pg.execute(
+                                    "UPDATE lote \
+                                     SET total_tapas_clasificadas = LEAST(total_tapas_clasificadas + $2, total_tapas_entrada) \
+                                     WHERE id_lote = $1",
+                                    &[&id_lote, &cantidad],
+                                ).await {
+                                    Ok(n) if n > 0 => info!("Tapas clasificadas +{} en lote {}", cantidad, id_lote),
+                                    Ok(_)          => warn!("Lote {} no encontrado al clasificar tapas", id_lote),
+                                    Err(e)         => error!("Error actualizando tapas_clasificadas: {:?}", e),
+                                }
+                            }
+                        } else if event.eq_ignore_ascii_case("reset") {
+                            info!("Reset solicitado — limpiando producción en DB");
+                            for sql in &[
+                                "DELETE FROM material_caja",
+                                "DELETE FROM caja",
+                                "DELETE FROM palet",
+                            ] {
+                                match pg.execute(*sql, &[]).await {
+                                    Ok(n)  => info!("Reset: {} filas eliminadas ({})", n, sql),
+                                    Err(e) => error!("Error en reset DB ({}): {:?}", sql, e),
+                                }
+                            }
                         } else {
                             warn!("Evento desconocido: {}", event);
                         }

@@ -32,7 +32,6 @@ impl<'a> MqttManager<'a> {
     pub fn connect_and_subscribe_with_state(
         control_state: Arc<Mutex<ControlState>>,
         emergency_stop: Arc<AtomicBool>,
-        vision_tx: SyncSender<String>,
         pull_slot: PullSlot,
         nvs: EspDefaultNvsPartition,
     ) -> Result<Self> {
@@ -70,9 +69,6 @@ impl<'a> MqttManager<'a> {
                 let topic_recibido = topic.unwrap_or("");
 
                 match topic_recibido {
-                    config::MQTT_TOPIC_SCADA_STATUS => {
-                        handle_scada_status_message(mensaje, &control_state, &nvs);
-                    }
                     config::MQTT_TOPIC_SCADA_ACTION => {
                         if emergency_stop.load(Ordering::SeqCst) {
                             info!("Sistema en emergencia, ignorando comando SCADA");
@@ -157,7 +153,6 @@ impl<'a> MqttManager<'a> {
                                         }
                                         state.expected_tapa = Some(ExpectedTapa {
                                             color: color_str.to_string(),
-                                            validated: false,
                                         });
                                     }
                                 } else {
@@ -170,19 +165,27 @@ impl<'a> MqttManager<'a> {
                                 info!("SCADA ordenó reset de tolvas");
                                 if let Ok(mut state) = control_state.try_lock() {
                                     state.reset_tolva_counts();
-                                    state.pending_tolva_counts = [0; 6];
-                                    state.pending_tapas.clear();
+                                    state.pallet_counts = [0; 6];
+                                    state.cobot_next_pallet = [1, 2, 3, 4, 5, 6];
                                     state.amr_pending_tolva = None;
+                                    state.amr_dispatched_at = None;
                                     state.amr_arrived_tolva = None;
                                     state.amr_arrived_at = None;
                                     state.amr_id_caja = None;
                                     state.amr_caja_tolva = None;
                                     state.cobot_ready = false;
                                     state.cobot_in_progress = false;
+                                    state.cobot_pending_color = None;
+                                    state.cobot_pending_caja = None;
+                                    state.cobot_active_color = None;
+                                    state.cobot_completed_event = None;
+                                    state.total_processed = 0;
+                                    state.tapas_clasificadas_pending = 0;
                                     state.auto_target = 0;
                                     state.auto_spawned = 0;
                                     state.auto_validated = 0;
                                     state.id_lote = None;
+                                    state.reset_db_pending = true;
 
                                     if let Err(err) = state.save_tolva_counts(&nvs) {
                                         error!("No se pudo guardar tolvas en NVS tras reset: {:?}", err);
@@ -197,10 +200,8 @@ impl<'a> MqttManager<'a> {
                         }
                     }
                     
-                    config::MQTT_TOPIC_CAMERA_DATA => {
-                        // Cámara virtual detectó una tapa
-                        info!("Cámara virtual detectó tapa: {}", mensaje);
-                        let _ = vision_tx.try_send(mensaje.to_string());
+                    config::MQTT_TOPIC_DELTA_STATUS => {
+                        handle_delta_status_message(mensaje, &control_state, &nvs);
                     }
 
 
@@ -274,77 +275,6 @@ fn subscribe_all_topics(client: &mut EspMqttClient<'_>, topics: &[&str]) {
     }
 }
 
-fn handle_scada_status_message(
-    mensaje: &str,
-    control_state: &Arc<Mutex<ControlState>>,
-    nvs: &EspDefaultNvsPartition,
-) {
-    // Espera un mensaje con "cmd" == "done" y un campo "tolva": "TOLVA_#"
-    if let Ok(value) = serde_json::from_str::<Value>(mensaje) {
-        let cmd = value.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
-        if !cmd.eq_ignore_ascii_case("done") && !cmd.eq_ignore_ascii_case("completed") {
-            return;
-        }
-
-        let id_cap = value.get("id_cap").and_then(|v| v.as_str()).unwrap_or("");
-        if id_cap.is_empty() {
-            error!("SCADA_STATUS sin id_cap: {}", mensaje);
-            return;
-        }
-
-        let tolva = value.get("tolva").and_then(|v| v.as_str()).unwrap_or("");
-        if let Some(index) = parse_tolva_index(tolva) {
-            if let Ok(mut state) = control_state.try_lock() {
-                match state.pending_tapas.remove(id_cap) {
-                    Some(expected_index) if expected_index == index => {
-                        if state.pending_tolva_counts[index] > 0 {
-                            state.pending_tolva_counts[index] -= 1;
-                            state.tolva_counts[index] += 1;
-
-                            if let Err(err) = state.save_tolva_counts(nvs) {
-                                error!("No se pudo guardar tolvas en NVS: {:?}", err);
-                            }
-                        } else {
-                            error!("Confirmacion sin pendientes para {}", tolva);
-                        }
-                    }
-                    Some(expected_index) => {
-                        error!(
-                            "id_cap {} esperaba TOLVA_{}, pero llego {}",
-                            id_cap,
-                            expected_index + 1,
-                            tolva
-                        );
-                        state.pending_tapas.insert(id_cap.to_string(), expected_index);
-                    }
-                    None => {
-                        error!("id_cap {} no encontrado en pendientes", id_cap);
-                    }
-                }
-            } else {
-                error!("No se pudo lockear control_state para actualizar tolva");
-            }
-        } else {
-            error!("Tolva inválida en SCADA_STATUS: {}", tolva);
-        }
-    } else if mensaje.to_ascii_lowercase().contains("cmd") {
-        error!("SCADA_STATUS sin JSON válido: {}", mensaje);
-    }
-}
-
-fn parse_tolva_index(tolva: &str) -> Option<usize> {
-    let trimmed = tolva.trim();
-    let num_str = trimmed.strip_prefix("TOLVA_")?;
-    let num = num_str.parse::<usize>().ok()?;
-    if (1..=6).contains(&num) {
-        Some(num - 1)
-    } else {
-        None
-    }
-}
-
-
-
 fn handle_amr_status_message(mensaje: &str, control_state: &Arc<Mutex<ControlState>>) {
     if let Ok(value) = serde_json::from_str::<Value>(mensaje) {
         let status = value.get("status").and_then(|v| v.as_str()).unwrap_or("");
@@ -401,28 +331,80 @@ fn parse_amr_location_index(location: &str) -> Option<usize> {
     }
 }
 
-fn handle_cobot_status_message(mensaje: &str, control_state: &Arc<Mutex<ControlState>>) {
+fn handle_delta_status_message(
+    mensaje: &str,
+    control_state: &Arc<Mutex<ControlState>>,
+    nvs: &EspDefaultNvsPartition,
+) {
     if let Ok(value) = serde_json::from_str::<Value>(mensaje) {
         let status = value.get("status").and_then(|v| v.as_str()).unwrap_or("");
         if !status.eq_ignore_ascii_case("completed") {
             return;
         }
 
-        let id_pallet = value.get("id_pallet").and_then(|v| v.as_str());
-        if let Some(id_str) = id_pallet {
-            if let Ok(mut state) = control_state.try_lock() {
-                let count = *state.pallet_counts.entry(id_str.to_string()).and_modify(|c| *c += 1).or_insert(1);
-                if count >= config::PALLET_CAPACITY {
-                    state.cobot_next_pallet += 1;
-                    info!("Pallet {} lleno ({} cajas) — siguiente pallet P{:04}", id_str, count, state.cobot_next_pallet);
+        let color = value.get("color").and_then(|v| v.as_str()).unwrap_or("");
+        let id_cap = value.get("id_cap").and_then(|v| v.as_str()).unwrap_or("?");
+
+        let tolva_index = match color.to_ascii_lowercase().as_str() {
+            "red"    => 0,
+            "yellow" => 1,
+            "green"  => 2,
+            "white"  => 3,
+            "orange" => 4,
+            "blue"   => 5,
+            _ => {
+                error!("Delta completed con color desconocido: {}", color);
+                return;
+            }
+        };
+
+        if let Ok(mut state) = control_state.try_lock() {
+            state.tolva_counts[tolva_index] += 1;
+            state.total_processed += 1;
+            if state.id_lote.is_some() {
+                state.tapas_clasificadas_pending += 1;
+            }
+
+            if state.mode == crate::control_state::Mode::Auto {
+                if state.auto_validated < state.auto_target {
+                    state.auto_validated += 1;
+                    if state.auto_validated >= state.auto_target {
+                        state.batch_complete_pending = true;
+                    }
                 }
-                state.cobot_completed_event = Some(id_str.to_string());
-                state.cobot_in_progress = false;
             } else {
-                error!("No se pudo lockear control_state para cobot status");
+                if state.manual_remaining > 0 {
+                    state.manual_remaining -= 1;
+                }
+                state.expected_tapa = None;
+            }
+
+            info!("Delta depositó {} en TOLVA_{} (total: {})", id_cap, tolva_index + 1, state.tolva_counts[tolva_index]);
+
+            if let Err(e) = state.save_tolva_counts(nvs) {
+                error!("No se pudo guardar tolvas en NVS: {:?}", e);
             }
         } else {
-            error!("cobot status sin id_pallet: {}", mensaje);
+            error!("No se pudo lockear control_state para delta status");
+        }
+    } else {
+        error!("delta status sin JSON valido: {}", mensaje);
+    }
+}
+
+fn handle_cobot_status_message(mensaje: &str, control_state: &Arc<Mutex<ControlState>>) {
+    if let Ok(value) = serde_json::from_str::<Value>(mensaje) {
+        let status = value.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if !status.eq_ignore_ascii_case("completed") {
+            return;
+        }
+        let id_pallet = value.get("id_pallet").and_then(|v| v.as_str()).unwrap_or("?");
+        if let Ok(mut state) = control_state.try_lock() {
+            info!("Cobot completó operación en pallet {}", id_pallet);
+            state.cobot_completed_event = Some(id_pallet.to_string());
+            state.cobot_in_progress = false;
+        } else {
+            error!("No se pudo lockear control_state para cobot status");
         }
     } else {
         error!("cobot status sin JSON valido: {}", mensaje);
