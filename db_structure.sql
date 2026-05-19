@@ -1,7 +1,7 @@
 /*
    @file db_structure.sql
    @author Sergio Real, Felix Piedrasanta, Diego Jimenez, Enric _Talens
-   @brief SQL file to create the database structure for the PR2-A1 project.
+   @brief SQL file to create the database structure for the PR2-A1 project
 */
 
 /*

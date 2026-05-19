@@ -2,7 +2,6 @@
     @file queries.sql
     @brief SQL file to insert sample data into the database for the PR2-A1 project.
     @author Sergio Real, Felix Piedrasanta, Diego Jimenez, Enric Talens
-
 */
 
 /*
