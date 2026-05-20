@@ -1,33 +1,49 @@
 #!/usr/bin/env python3
 """
-bridge.py — Puente MQTT <-> PostgreSQL
-Equivalente Python del bridge Rust en c:/p/d/bridge/src/main.rs
+bridge.py — Puente MQTT <-> PostgreSQL & MongoDB (NoSQL)
+Equivalente Python del bridge Rust extendido.
 """
 
 import json
 import logging
 import os
 import time
+from datetime import datetime, timezone
 
 import paho.mqtt.client as mqtt_client
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Configuración
+# Configuración MQTT y Entorno
 # ---------------------------------------------------------------------------
 
 MQTT_HOST      = os.getenv("MQTT_HOST", "broker.hivemq.com")
 MQTT_PORT      = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_CLIENT_ID = f"{os.getenv('MQTT_CLIENT_ID', 'mqtt-db-bridge-py')}-{int(time.time() * 1000) % 10000}"
-DATABASE_URL   = os.getenv("DATABASE_URL")
 
+# Topics SQL
 TOPIC_DB_PUSH   = "giirob/pr2-A1/db/push"
 TOPIC_DB_PULL   = "giirob/pr2-A1/db/pull"
 TOPIC_PULL_RESP = "giirob/pr2-A1/db/pull/response"
+
+# Topic NoSQL
+TOPIC_NOSQL_PUSH = "giirob/pr2-A1/nosql/push"
+
+# Colecciones permitidas en MongoDB
+ALLOWED_NOSQL_COLLECTIONS = {
+    "alertas_tolva", 
+    "ciclos_cobot", 
+    "comandos_scada", 
+    "despachos_amr", 
+    "emergencias", 
+    "eventos_cinta"
+}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,11 +53,13 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------
-# Base de datos
+# Conexiones a Bases de Datos (SQL y NoSQL)
 # --------------------------------------------------------------------------
 
-def connect_db() -> psycopg2.extensions.connection:
+def connect_pg_db() -> psycopg2.extensions.connection:
+    """Conexión a PostgreSQL"""
     target_dbname = os.getenv("PGDATABASE", "db-pr2")
+    DATABASE_URL = os.getenv("DATABASE_URL")
 
     if DATABASE_URL:
         conn = psycopg2.connect(psycopg2.extensions.make_dsn(DATABASE_URL, dbname=target_dbname))
@@ -62,18 +80,72 @@ def connect_db() -> psycopg2.extensions.connection:
     log.info("PostgreSQL conectado")
     return conn
 
+def connect_mongo_db():
+    """Conexión a MongoDB"""
+    mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
+    mongo_db_name = os.getenv("MONGO_DB_NAME", "pr2_nosql_db")
+    
+    try:
+        client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+        client.admin.command('ping')  # Fuerza una llamada para verificar la conexión
+        log.info("MongoDB (NoSQL) conectado")
+        return client[mongo_db_name]
+    except Exception as e:
+        log.error("Error conectando a MongoDB. Los eventos NoSQL fallarán: %s", e)
+        return None
 
 def safe_execute(conn, func, *args):
-    """Ejecuta func(conn, *args) dentro de una transacción con rollback automático."""
+    """Ejecuta func(conn, *args) dentro de una transacción PG con rollback automático."""
     try:
         func(conn, *args)
         conn.commit()
     except Exception as exc:
         conn.rollback()
-        log.error("Error en transacción — rollback: %s", exc)
+        log.error("Error en transacción PostgreSQL — rollback: %s", exc)
+
 
 # ---------------------------------------------------------------------------
-# Handlers db/push
+# Handlers NoSQL (MongoDB)
+# ---------------------------------------------------------------------------
+
+def handle_nosql_push(mongo_db, payload: str) -> None:
+    if mongo_db is None:
+        log.warning("Se omitió evento NoSQL (MongoDB no conectado).")
+        return
+
+    try:
+        val = json.loads(payload)
+    except json.JSONDecodeError:
+        log.error("JSON inválido en nosql/push: %s", payload)
+        return
+
+    # Esperamos que el JSON tenga un campo "coleccion" indicando el destino
+    coleccion_destino = val.get("coleccion", "").lower().strip()
+
+    if coleccion_destino not in ALLOWED_NOSQL_COLLECTIONS:
+        log.warning("Intento de inserción en colección NoSQL no permitida o no definida: '%s'", coleccion_destino)
+        return
+
+    # Extraemos los datos a insertar. 
+    # Si viene envuelto en un campo "data", lo usamos. Si no, metemos todo el JSON.
+    documento = val.get("data", val.copy())
+    
+    # Limpiamos el campo de enrutamiento si guardamos el objeto completo
+    if "coleccion" in documento:
+        del documento["coleccion"]
+
+    # Añadimos un timestamp automático de recepción (buena práctica en IoT/NoSQL)
+    documento["_ts_recepcion"] = datetime.now(timezone.utc).isoformat()
+
+    try:
+        resultado = mongo_db[coleccion_destino].insert_one(documento)
+        log.info("Mongo [%s]: Inserción OK (id: %s)", coleccion_destino, resultado.inserted_id)
+    except Exception as e:
+        log.error("Error insertando documento en MongoDB [%s]: %s", coleccion_destino, e)
+
+
+# ---------------------------------------------------------------------------
+# Handlers SQL (PostgreSQL) db/push
 # ---------------------------------------------------------------------------
 
 def handle_db_push(conn: psycopg2.extensions.connection, payload: str) -> None:
@@ -96,7 +168,6 @@ def handle_db_push(conn: psycopg2.extensions.connection, payload: str) -> None:
     else:
         log.warning("Evento desconocido en db/push: %s", event)
 
-
 def _handle_caja_paletizada(conn, val: dict) -> None:
     id_caja     = val.get("id_caja", "").strip()
     id_palet    = val.get("id_palet", "").strip()
@@ -108,36 +179,23 @@ def _handle_caja_paletizada(conn, val: dict) -> None:
         log.warning("caja_paletizada con campos faltantes: %s", val)
         return
 
-    log.info("Paletizando: caja=%s palet=%s color=%s estado=%s", id_caja, id_palet, id_color, estado)
-
     with conn.cursor() as cur:
-        # 1. Upsert palet
         cur.execute(
             """INSERT INTO palet (id_palet, id_color, estado)
                VALUES (%s, %s, %s)
                ON CONFLICT (id_palet) DO UPDATE SET estado = EXCLUDED.estado""",
             (id_palet, id_color, estado),
         )
-        log.info("Palet %s upserted", id_palet)
-
-        # 2. Vincular caja al palet
         cur.execute(
             "UPDATE caja SET id_palet = %s WHERE id_caja = %s",
             (id_palet, id_caja),
         )
-        log.info("Caja %s vinculada a palet %s (%d fila/s)", id_caja, id_palet, cur.rowcount)
-
-        # 3. Asignar operario de cierre si el palet queda cerrado
-        if estado:
-            if id_operario:
-                cur.execute(
-                    "UPDATE palet SET id_operario = %s WHERE id_palet = %s",
-                    (str(id_operario).strip(), id_palet),
-                )
-                log.info("Operario %s asignado como cierre del palet %s", id_operario, id_palet)
-            else:
-                log.warning("Palet %s cerrado sin id_operario", id_palet)
-
+        if estado and id_operario:
+            cur.execute(
+                "UPDATE palet SET id_operario = %s WHERE id_palet = %s",
+                (str(id_operario).strip(), id_palet),
+            )
+        log.info("SQL: Paletizado caja=%s palet=%s", id_caja, id_palet)
 
 def _handle_box_completed(conn, val: dict) -> None:
     id_caja         = val.get("id_caja", "").strip()
@@ -150,10 +208,7 @@ def _handle_box_completed(conn, val: dict) -> None:
         log.warning("box_completed con campos faltantes: %s", val)
         return
 
-    log.info("Box completed: caja=%s color=%s etiqueta=%s lotes=%s", id_caja, color, codigo_etiqueta, lotes)
-
     with conn.cursor() as cur:
-        # Insertar caja (sin palet aún, se asigna en caja_paletizada)
         cur.execute(
             """INSERT INTO caja (id_caja, color, codigo_etiqueta, estado)
                VALUES (%s, %s, %s, %s)
@@ -163,137 +218,90 @@ def _handle_box_completed(conn, val: dict) -> None:
                    estado = EXCLUDED.estado""",
             (id_caja, color, codigo_etiqueta, estado),
         )
-        log.info("Caja %s insertada/actualizada", id_caja)
-
-        # Vincular caja a cada lote en material_caja
         for lote_id in lotes:
             lote_id = str(lote_id).strip()
-            if not lote_id:
-                continue
-
+            if not lote_id: continue
             cur.execute("SELECT 1 FROM lote WHERE id_lote = %s", (lote_id,))
-            if cur.fetchone() is None:
-                log.warning("Lote %s no existe; se omite la relación con caja %s", lote_id, id_caja)
-                continue
-
+            if cur.fetchone() is None: continue
             cur.execute(
                 """INSERT INTO material_caja (lote, id_caja)
-                   VALUES (%s, %s)
-                   ON CONFLICT DO NOTHING""",
+                   VALUES (%s, %s) ON CONFLICT DO NOTHING""",
                 (lote_id, id_caja),
             )
-            log.info("Caja %s vinculada a lote %s", id_caja, lote_id)
-
+        log.info("SQL: Box completed caja=%s", id_caja)
 
 def _handle_tapa_clasificada(conn, val: dict) -> None:
     id_lote  = val.get("id_lote", "").strip()
     cantidad = int(val.get("cantidad", 1))
 
-    if not id_lote:
-        log.warning("tapa_clasificada sin id_lote: %s", val)
-        return
+    if not id_lote: return
 
     with conn.cursor() as cur:
         cur.execute(
-            """UPDATE lote
-               SET total_tapas_clasificadas = total_tapas_clasificadas + %s
-               WHERE id_lote = %s
-                 AND total_tapas_clasificadas + %s <= total_tapas_entrada""",
+            """UPDATE lote SET total_tapas_clasificadas = total_tapas_clasificadas + %s
+               WHERE id_lote = %s AND total_tapas_clasificadas + %s <= total_tapas_entrada""",
             (cantidad, id_lote, cantidad),
         )
-        if cur.rowcount > 0:
-            log.info("%d tapa(s) clasificada(s) en lote %s", cantidad, id_lote)
-        else:
-            log.warning("Lote %s no encontrado o ya completo", id_lote)
-
+        log.info("SQL: Tapa clasificada lote=%s cant=%d", id_lote, cantidad)
 
 def _handle_reset(conn) -> None:
     with conn.cursor() as cur:
         cur.execute("UPDATE lote SET total_tapas_clasificadas = 0")
-        log.info("Reset: %d lote(s) reiniciado(s)", cur.rowcount)
+        log.info("SQL: Lotes reiniciados")
+
 
 # ---------------------------------------------------------------------------
-# Handlers db/pull
+# Handlers SQL (PostgreSQL) db/pull
 # ---------------------------------------------------------------------------
 
 def handle_db_pull(conn: psycopg2.extensions.connection, client, payload: str) -> None:
     try:
         val = json.loads(payload)
     except json.JSONDecodeError:
-        log.error("JSON inválido en db/pull: %s", payload)
         return
 
     query = val.get("query", "").lower()
-
-    if query == "operarios":
-        _query_operarios(conn, client)
-    elif query == "lote_pendiente":
-        _query_lote_pendiente(conn, client)
-    else:
-        log.warning("db/pull query desconocida: %s", query)
-
+    if query == "operarios": _query_operarios(conn, client)
+    elif query == "lote_pendiente": _query_lote_pendiente(conn, client)
 
 def _query_operarios(conn, client) -> None:
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("SELECT id_operario, nombre, apellido FROM operario")
         rows = cur.fetchall()
-
-    lista = [
-        {
-            "id_operario": r["id_operario"].strip(),
-            "nombre":      r["nombre"].strip(),
-            "apellido":    r["apellido"].strip(),
-        }
-        for r in rows
-    ]
-    resp = json.dumps({"operarios": lista})
-    client.publish(TOPIC_PULL_RESP, resp, qos=1)
-    log.info("Operarios enviados: %d registros", len(lista))
-
+    
+    lista = [{"id_operario": r["id_operario"].strip(), "nombre": r["nombre"].strip(), "apellido": r["apellido"].strip()} for r in rows]
+    client.publish(TOPIC_PULL_RESP, json.dumps({"operarios": lista}), qos=1)
 
 def _query_lote_pendiente(conn, client) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """SELECT id_lote, total_tapas_entrada - total_tapas_clasificadas AS pendientes
-               FROM lote
-               WHERE total_tapas_clasificadas < total_tapas_entrada
-               ORDER BY fecha_inicio ASC
-               LIMIT 1"""
+               FROM lote WHERE total_tapas_clasificadas < total_tapas_entrada
+               ORDER BY fecha_inicio ASC LIMIT 1"""
         )
         row = cur.fetchone()
 
     if row:
         lote_id, pendientes = row
-        resp = json.dumps({
-            "lote_id":  lote_id.strip(),
-            "quantity": pendientes,
-            "color":    "red",
-        })
-        client.publish(TOPIC_PULL_RESP, resp, qos=1)
-        log.info("Lote pendiente enviado: %s (%d tapas)", lote_id.strip(), pendientes)
+        client.publish(TOPIC_PULL_RESP, json.dumps({"lote_id": lote_id.strip(), "quantity": pendientes, "color": "red"}), qos=1)
     else:
-        # Demo: reiniciar lotes cuando todos están completos
-        with conn.cursor() as cur:
-            cur.execute("UPDATE lote SET total_tapas_clasificadas = 0")
-            conn.commit()
-            log.info("Demo reset: %d lote(s) reiniciado(s)", cur.rowcount)
-        resp = json.dumps({"lote_id": None})
-        client.publish(TOPIC_PULL_RESP, resp, qos=1)
-        log.warning("Todos los lotes completados — demo reiniciado automáticamente")
+        client.publish(TOPIC_PULL_RESP, json.dumps({"lote_id": None}), qos=1)
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    conn = connect_db()
+    pg_conn = connect_pg_db()
+    mongo_db = connect_mongo_db()
 
     def on_connect(client, userdata, flags, rc):
         if rc == 0:
             log.info("MQTT conectado al broker")
             client.subscribe(TOPIC_DB_PUSH, qos=1)
             client.subscribe(TOPIC_DB_PULL, qos=1)
-            log.info("Suscrito a %s y %s", TOPIC_DB_PUSH, TOPIC_DB_PULL)
+            client.subscribe(TOPIC_NOSQL_PUSH, qos=1) # Nuevo topic NoSQL
+            log.info("Suscrito a SQL Push/Pull y NoSQL Push")
         else:
             log.error("Error al conectar a MQTT, código: %d", rc)
 
@@ -303,9 +311,11 @@ def main() -> None:
         log.info("Mensaje en [%s]: %s", topic, payload)
 
         if topic == TOPIC_DB_PUSH:
-            handle_db_push(conn, payload)
+            handle_db_push(pg_conn, payload)
         elif topic == TOPIC_DB_PULL:
-            handle_db_pull(conn, client, payload)
+            handle_db_pull(pg_conn, client, payload)
+        elif topic == TOPIC_NOSQL_PUSH:
+            handle_nosql_push(mongo_db, payload) # Enrutador hacia MongoDB
 
     def on_disconnect(client, userdata, rc):
         if rc != 0:
