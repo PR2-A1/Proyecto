@@ -41,9 +41,23 @@ log = logging.getLogger(__name__)
 # --------------------------------------------------------------------------
 
 def connect_db() -> psycopg2.extensions.connection:
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL no definida en .env")
-    conn = psycopg2.connect(DATABASE_URL)
+    target_dbname = os.getenv("PGDATABASE", "db-pr2")
+
+    if DATABASE_URL:
+        conn = psycopg2.connect(psycopg2.extensions.make_dsn(DATABASE_URL, dbname=target_dbname))
+    else:
+        conn = psycopg2.connect(
+            dbname=target_dbname,
+            user=os.getenv("PGUSER", os.getenv("USER")),
+            password=os.getenv("PGPASSWORD"),
+            host=os.getenv("PGHOST", "localhost"),
+            port=os.getenv("PGPORT", "5432"),
+        )
+
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("SET search_path TO pr2_a1_db, public")
+
     conn.autocommit = False
     log.info("PostgreSQL conectado")
     return conn
@@ -86,7 +100,7 @@ def handle_db_push(conn: psycopg2.extensions.connection, payload: str) -> None:
 def _handle_caja_paletizada(conn, val: dict) -> None:
     id_caja     = val.get("id_caja", "").strip()
     id_palet    = val.get("id_palet", "").strip()
-    id_color    = val.get("id_color", "").upper().strip()
+    id_color    = val.get("id_color", "").lower().strip()
     estado      = bool(val.get("estado", False))
     id_operario = val.get("id_operario")
 
@@ -127,7 +141,7 @@ def _handle_caja_paletizada(conn, val: dict) -> None:
 
 def _handle_box_completed(conn, val: dict) -> None:
     id_caja         = val.get("id_caja", "").strip()
-    color           = val.get("color", "").upper().strip()
+    color           = val.get("color", "").lower().strip()
     codigo_etiqueta = val.get("codigo_etiqueta", "").strip()
     estado          = bool(val.get("estado", False))
     lotes           = val.get("lotes", [])
@@ -153,11 +167,20 @@ def _handle_box_completed(conn, val: dict) -> None:
 
         # Vincular caja a cada lote en material_caja
         for lote_id in lotes:
+            lote_id = str(lote_id).strip()
+            if not lote_id:
+                continue
+
+            cur.execute("SELECT 1 FROM lote WHERE id_lote = %s", (lote_id,))
+            if cur.fetchone() is None:
+                log.warning("Lote %s no existe; se omite la relación con caja %s", lote_id, id_caja)
+                continue
+
             cur.execute(
                 """INSERT INTO material_caja (lote, id_caja)
                    VALUES (%s, %s)
                    ON CONFLICT DO NOTHING""",
-                (str(lote_id).strip(), id_caja),
+                (lote_id, id_caja),
             )
             log.info("Caja %s vinculada a lote %s", id_caja, lote_id)
 
