@@ -3,6 +3,12 @@ use esp_idf_svc::{
     sys::EspError,
 };
 
+pub enum RobotEvent {
+    DeltaCompleted { color: String, id_cap: String },
+    AmrArrived     { location: String },
+    CobotCompleted { id_pallet: String },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Manual,

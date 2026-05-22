@@ -47,5 +47,3 @@ pub const AMR_TIMEOUT_SECS: u64 = 120;
 pub const PALLET_CAPACITY: u64 = 6;         // 2 cajas/nivel × 3 niveles
 pub const COBOT_TIMEOUT_SECS: u64 = 60;
 
-
-//pub const MQTT_PUBLISH_INTERVAL_SECS: u64 = 5;

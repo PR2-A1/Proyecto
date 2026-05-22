@@ -6,6 +6,7 @@ use esp_idf_svc::{
 use std::{
     sync::{
         atomic::AtomicBool,
+        mpsc,
         Arc,
         Mutex,
     },
@@ -64,12 +65,14 @@ fn main() -> anyhow::Result<()> {
     let emergency_stop = Arc::new(AtomicBool::new(false));
     
     let pull_slot = Arc::new(Mutex::new(None::<std::sync::mpsc::SyncSender<String>>));
+    let (event_tx, event_rx) = mpsc::sync_channel::<control_state::RobotEvent>(64);
 
     let mqtt = Arc::new(Mutex::new(mqtt_manager::MqttManager::connect_and_subscribe_with_state(
         Arc::clone(&control_state),
         Arc::clone(&emergency_stop),
         Arc::clone(&pull_slot),
         nvs,
+        event_tx,
     )?));
 
     let _logic_handle = logic_task::spawn_logic_task(
@@ -78,6 +81,7 @@ fn main() -> anyhow::Result<()> {
         Arc::clone(&control_state),
         pull_slot,
         nvs_logic,
+        event_rx,
     )?;
 
     //Tarea principal gestiona la emergencia.

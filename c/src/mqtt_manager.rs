@@ -16,7 +16,7 @@ use std::{
 
 use crate::{
     config,
-    control_state::{ControlState, Mode, ExpectedTapa},
+    control_state::{ControlState, Mode, ExpectedTapa, RobotEvent},
 };
 
 pub type PullSlot = Arc<Mutex<Option<SyncSender<String>>>>;
@@ -34,6 +34,7 @@ impl<'a> MqttManager<'a> {
         emergency_stop: Arc<AtomicBool>,
         pull_slot: PullSlot,
         nvs: EspDefaultNvsPartition,
+        event_tx: SyncSender<RobotEvent>,
     ) -> Result<Self> {
 
         //Configuración de creedenciales MQTT.
@@ -201,7 +202,18 @@ impl<'a> MqttManager<'a> {
                     }
                     
                     config::MQTT_TOPIC_DELTA_STATUS => {
-                        handle_delta_status_message(mensaje, &control_state, &nvs);
+                        if let Ok(value) = serde_json::from_str::<Value>(mensaje) {
+                            let status = value.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                            if status.eq_ignore_ascii_case("completed") {
+                                let color  = value.get("color").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let id_cap = value.get("id_cap").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+                                if let Err(e) = event_tx.try_send(RobotEvent::DeltaCompleted { color, id_cap }) {
+                                    error!("Cola llena — delta/status descartado: {:?}", e);
+                                }
+                            }
+                        } else {
+                            error!("delta/status sin JSON válido: {}", mensaje);
+                        }
                     }
 
 
@@ -229,10 +241,30 @@ impl<'a> MqttManager<'a> {
                         }
                     }
                     config::MQTT_TOPIC_AMR_STATUS => {
-                        handle_amr_status_message(mensaje, &control_state);
+                        if let Ok(value) = serde_json::from_str::<Value>(mensaje) {
+                            let status   = value.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                            let location = value.get("location").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            if status.eq_ignore_ascii_case("ARRIVED") {
+                                if let Err(e) = event_tx.try_send(RobotEvent::AmrArrived { location }) {
+                                    error!("Cola llena — amr/status descartado: {:?}", e);
+                                }
+                            }
+                        } else {
+                            error!("amr/status sin JSON válido: {}", mensaje);
+                        }
                     }
                     config::MQTT_TOPIC_COBOT_STATUS => {
-                        handle_cobot_status_message(mensaje, &control_state);
+                        if let Ok(value) = serde_json::from_str::<Value>(mensaje) {
+                            let status    = value.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                            let id_pallet = value.get("id_pallet").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+                            if status.eq_ignore_ascii_case("completed") {
+                                if let Err(e) = event_tx.try_send(RobotEvent::CobotCompleted { id_pallet }) {
+                                    error!("Cola llena — cobot/status descartado: {:?}", e);
+                                }
+                            }
+                        } else {
+                            error!("cobot/status sin JSON válido: {}", mensaje);
+                        }
                     }
                     
                     _ => info!("Mensaje en topic no gestionado: {}", topic_recibido),
@@ -275,138 +307,3 @@ fn subscribe_all_topics(client: &mut EspMqttClient<'_>, topics: &[&str]) {
     }
 }
 
-fn handle_amr_status_message(mensaje: &str, control_state: &Arc<Mutex<ControlState>>) {
-    if let Ok(value) = serde_json::from_str::<Value>(mensaje) {
-        let status = value.get("status").and_then(|v| v.as_str()).unwrap_or("");
-        if !status.eq_ignore_ascii_case("ARRIVED") {
-            return;
-        }
-
-        let location = value.get("location").and_then(|v| v.as_str()).unwrap_or("");
-        if location.eq_ignore_ascii_case(config::AMR_WAREHOUSE_LOCATION) {
-            if let Ok(mut state) = control_state.try_lock() {
-                state.cobot_ready = true;
-            } else {
-                error!("No se pudo lockear control_state para AMR cobot_pick");
-            }
-            return;
-        }
-        if let Some(index) = parse_amr_location_index(location) {
-            if let Ok(mut state) = control_state.try_lock() {
-                match state.amr_pending_tolva {
-                    Some(pending_index) if pending_index == index => {
-                        state.amr_arrived_tolva = Some(index);
-                        state.amr_arrived_at = Some(std::time::Instant::now());
-                    }
-                    Some(pending_index) => {
-                        error!(
-                            "AMR llego a {}, pero se esperaba tolva {}",
-                            location,
-                            pending_index + 1
-                        );
-                    }
-                    None => {
-                        error!("AMR llego a {} sin tolva pendiente", location);
-                    }
-                }
-            } else {
-                error!("No se pudo lockear control_state para AMR status");
-            }
-        } else {
-            error!("Location AMR invalida: {}", location);
-        }
-    } else {
-        error!("AMR status sin JSON valido: {}", mensaje);
-    }
-}
-
-fn parse_amr_location_index(location: &str) -> Option<usize> {
-    let normalized = location.trim().to_ascii_lowercase();
-    let num_str = normalized.strip_prefix("tolva_")?;
-    let num = num_str.parse::<usize>().ok()?;
-    if (1..=6).contains(&num) {
-        Some(num - 1)
-    } else {
-        None
-    }
-}
-
-fn handle_delta_status_message(
-    mensaje: &str,
-    control_state: &Arc<Mutex<ControlState>>,
-    nvs: &EspDefaultNvsPartition,
-) {
-    if let Ok(value) = serde_json::from_str::<Value>(mensaje) {
-        let status = value.get("status").and_then(|v| v.as_str()).unwrap_or("");
-        if !status.eq_ignore_ascii_case("completed") {
-            return;
-        }
-
-        let color = value.get("color").and_then(|v| v.as_str()).unwrap_or("");
-        let id_cap = value.get("id_cap").and_then(|v| v.as_str()).unwrap_or("?");
-
-        let tolva_index = match color.to_ascii_lowercase().as_str() {
-            "red"    => 0,
-            "yellow" => 1,
-            "green"  => 2,
-            "white"  => 3,
-            "orange" => 4,
-            "blue"   => 5,
-            _ => {
-                error!("Delta completed con color desconocido: {}", color);
-                return;
-            }
-        };
-
-        if let Ok(mut state) = control_state.try_lock() {
-            state.tolva_counts[tolva_index] += 1;
-            state.total_processed += 1;
-            if state.id_lote.is_some() {
-                state.tapas_clasificadas_pending += 1;
-            }
-
-            if state.mode == crate::control_state::Mode::Auto {
-                if state.auto_validated < state.auto_target {
-                    state.auto_validated += 1;
-                    if state.auto_validated >= state.auto_target {
-                        state.batch_complete_pending = true;
-                    }
-                }
-            } else {
-                if state.manual_remaining > 0 {
-                    state.manual_remaining -= 1;
-                }
-                state.expected_tapa = None;
-            }
-
-            info!("Delta depositó {} en TOLVA_{} (total: {})", id_cap, tolva_index + 1, state.tolva_counts[tolva_index]);
-
-            if let Err(e) = state.save_tolva_counts(nvs) {
-                error!("No se pudo guardar tolvas en NVS: {:?}", e);
-            }
-        } else {
-            error!("No se pudo lockear control_state para delta status");
-        }
-    } else {
-        error!("delta status sin JSON valido: {}", mensaje);
-    }
-}
-
-fn handle_cobot_status_message(mensaje: &str, control_state: &Arc<Mutex<ControlState>>) {
-    if let Ok(value) = serde_json::from_str::<Value>(mensaje) {
-        let status = value.get("status").and_then(|v| v.as_str()).unwrap_or("");
-        if !status.eq_ignore_ascii_case("completed") {
-            return;
-        }
-        let id_pallet = value.get("id_pallet").and_then(|v| v.as_str()).unwrap_or("?");
-        if let Ok(mut state) = control_state.try_lock() {
-            info!("Cobot completó operación en pallet {}", id_pallet);
-            state.cobot_completed_event = Some(id_pallet.to_string());
-            state.cobot_in_progress = false;
-        } else {
-            error!("No se pudo lockear control_state para cobot status");
-        }
-    } else {
-        error!("cobot status sin JSON valido: {}", mensaje);
-    }
-}

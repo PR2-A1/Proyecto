@@ -4,6 +4,7 @@ use serde_json::json;
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
+        mpsc::Receiver,
         Arc,
         Mutex,
     },
@@ -16,7 +17,7 @@ use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use crate::{
     config,
     mqtt_manager::{MqttManager, PullSlot},
-    control_state::{ControlState, Mode},
+    control_state::{ControlState, Mode, RobotEvent},
 };
 
 pub fn next_id_cap() -> String {
@@ -32,6 +33,7 @@ pub fn spawn_logic_task<'a: 'static>(
     control_state: Arc<Mutex<ControlState>>,
     pull_slot: PullSlot,
     nvs: EspDefaultNvsPartition,
+    event_rx: Receiver<RobotEvent>,
 ) -> Result<thread::JoinHandle<()>> {
     let handle = thread::Builder::new()
         .name("logic-task".to_string())
@@ -40,6 +42,10 @@ pub fn spawn_logic_task<'a: 'static>(
                 if emergency_stop.load(Ordering::SeqCst) {
                     thread::sleep(Duration::from_millis(100));
                     continue;
+                }
+
+                while let Ok(event) = event_rx.try_recv() {
+                    process_robot_event(event, &control_state, &nvs);
                 }
 
                 try_spawn_caps(&mqtt, &control_state, &emergency_stop);
@@ -51,6 +57,88 @@ pub fn spawn_logic_task<'a: 'static>(
         })?;
 
     Ok(handle)
+}
+
+fn process_robot_event(
+    event: RobotEvent,
+    control_state: &Arc<Mutex<ControlState>>,
+    nvs: &EspDefaultNvsPartition,
+) {
+    match event {
+        RobotEvent::DeltaCompleted { color, id_cap } => {
+            let tolva_index = match color.to_ascii_lowercase().as_str() {
+                "red"    => 0,
+                "yellow" => 1,
+                "green"  => 2,
+                "white"  => 3,
+                "orange" => 4,
+                "blue"   => 5,
+                _ => { error!("Delta completed con color desconocido: {}", color); return; }
+            };
+            if let Ok(mut state) = control_state.lock() {
+                state.tolva_counts[tolva_index] += 1;
+                state.total_processed += 1;
+                if state.id_lote.is_some() {
+                    state.tapas_clasificadas_pending += 1;
+                }
+                if state.mode == Mode::Auto {
+                    if state.auto_validated < state.auto_target {
+                        state.auto_validated += 1;
+                        if state.auto_validated >= state.auto_target {
+                            state.batch_complete_pending = true;
+                        }
+                    }
+                } else {
+                    if state.manual_remaining > 0 {
+                        state.manual_remaining -= 1;
+                    }
+                    state.expected_tapa = None;
+                }
+                info!("Delta depositó {} en TOLVA_{} (total: {})", id_cap, tolva_index + 1, state.tolva_counts[tolva_index]);
+                if let Err(e) = state.save_tolva_counts(nvs) {
+                    error!("No se pudo guardar tolvas en NVS: {:?}", e);
+                }
+            }
+        }
+
+        RobotEvent::AmrArrived { location } => {
+            if location.eq_ignore_ascii_case(config::AMR_WAREHOUSE_LOCATION) {
+                if let Ok(mut state) = control_state.lock() {
+                    state.cobot_ready = true;
+                }
+                return;
+            }
+            if let Some(index) = parse_amr_location_index(&location) {
+                if let Ok(mut state) = control_state.lock() {
+                    match state.amr_pending_tolva {
+                        Some(pending) if pending == index => {
+                            state.amr_arrived_tolva = Some(index);
+                            state.amr_arrived_at    = Some(std::time::Instant::now());
+                        }
+                        Some(pending) => error!("AMR llegó a {}, esperaba tolva {}", location, pending + 1),
+                        None          => error!("AMR llegó a {} sin tolva pendiente", location),
+                    }
+                }
+            } else {
+                error!("Location AMR inválida: {}", location);
+            }
+        }
+
+        RobotEvent::CobotCompleted { id_pallet } => {
+            if let Ok(mut state) = control_state.lock() {
+                info!("Cobot completó operación en pallet {}", id_pallet);
+                state.cobot_completed_event = Some(id_pallet);
+                state.cobot_in_progress     = false;
+            }
+        }
+    }
+}
+
+fn parse_amr_location_index(location: &str) -> Option<usize> {
+    let normalized = location.trim().to_ascii_lowercase();
+    let num_str    = normalized.strip_prefix("tolva_")?;
+    let num        = num_str.parse::<usize>().ok()?;
+    if (1..=6).contains(&num) { Some(num - 1) } else { None }
 }
 
 fn try_spawn_caps<'a>(
