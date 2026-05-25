@@ -1,6 +1,6 @@
 # GIIROB — Pruebas de integración del sistema completo
 
-Guía de pruebas manuales end-to-end. Cubre el ESP32, el bridge Rust, el bridge Python/RoboDK y la base de datos PostgreSQL.
+Guía de pruebas manuales end-to-end del firmware ESP32-S3. Las verificaciones de base de datos y el bridge MQTT-DB son responsabilidad del servicio externo (otro repo).
 
 ---
 
@@ -10,11 +10,12 @@ Verificar que todos los servicios están activos antes de comenzar:
 
 | Servicio | Cómo arrancarlo | Señal de OK |
 |---|---|---|
-| PostgreSQL | `pg_ctl start` / servicio Windows | `psql -U postgres -c "\l"` muestra la BD |
-| Bridge BD (Python) | `cd db_bridge && python bridge.py` | Línea `Bridge listo — esperando mensajes MQTT...` |
+| Bridge BD | Ver rama del bridge (servicio externo) | Línea `Bridge listo — esperando mensajes MQTT...` |
 | Bridge RoboDK | `python MqttListener.py` (desde la carpeta robodk) | Línea `pick_worker iniciado` |
 | RoboDK | Abrir la escena `.rdk` | Delta presente, targets y `cap_template` visibles |
 | ESP32 | Flasheado y alimentado | LED de estado, conexión Wi-Fi activa |
+
+> Las verificaciones de PostgreSQL a lo largo de esta guía requieren el bridge activo. El código del bridge y la configuración de la BD están en otra rama del repositorio.
 
 Para monitorizar todos los mensajes MQTT del sistema en tiempo real:
 ```bash
@@ -27,24 +28,6 @@ mosquitto_pub -h broker.hivemq.com -t "<topic>" -m '<json>'
 ```
 
 ---
-
-## Datos previos — insertar antes de empezar
-
-```sql
-INSERT INTO proveedor (num_proveedor, cif_nif, nombre, certificacion_iso) VALUES
-('P0001', 'B12345678', 'Tapas García S.L.',       true),
-('P0002', 'A87654321', 'Plásticos Roca S.A.',     false),
-('P0003', 'B11223344', 'Industrias Molina',        true),
-('P0004', 'A99887766', 'Suministros Vega S.L.',   true),
-('P0005', 'B55443322', 'Componentes del Sur S.A.', false);
-
-INSERT INTO operario (id_operario, nombre, apellido) VALUES
-('OP001', 'Carlos',   'Martínez'),
-('OP002', 'Laura',    'Sánchez'),
-('OP003', 'Miguel',   'Torres'),
-('OP004', 'Ana',      'Romero'),
-('OP005', 'Fernando', 'Jiménez');
-```
 
 ---
 
@@ -123,7 +106,7 @@ SELECT id_lote, total_tapas_clasificadas FROM lote;
 
 ## Bloque 2 — Gestión de lotes (SCADA → Bridge → DB)
 
-> **Nota:** el bridge Python (`db_bridge/bridge.py`) no escucha `scada/action` — solo `db/push` y `db/pull`. Los tests de este bloque requieren insertar los lotes directamente por SQL o usar el bridge Rust anterior (`mqtt_db_bridge`).
+> **Nota:** la creación de lotes en la BD es responsabilidad del bridge (otra rama). Desde el ESP32 solo se envía el comando `gen` vía MQTT.
 
 ### 2.1 Crear lote con proveedor
 <!-- Funciona correctamente -->
@@ -525,9 +508,9 @@ El Python bridge vuelve a aceptar picks.
 
 ---
 
-## Bloque 8 — Bridge de base de datos (directo a `db/push`)
+## Bloque 8 — Bridge de base de datos
 
-Pruebas aisladas del bridge Rust publicando directamente en los topics. No requieren ESP32 activo.
+> Las pruebas de este bloque son responsabilidad del servicio externo (bridge MQTT-DB). Se documentan aquí solo como referencia de los topics y payloads que publica el ESP32.
 
 ### 8.1 Registrar caja sin lotes
 

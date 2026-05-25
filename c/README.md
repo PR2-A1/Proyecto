@@ -1,6 +1,6 @@
 # GiiRob PR2-A1 — Firmware ESP32-S3
 
-Firmware en Rust para ESP32-S3 que controla una línea de producción automatizada de tapas plásticas. El sistema coordina tres robots vía MQTT: un **Delta** (clasificador), un **AMR** (transporte) y un **Cobot** (paletizado), recibiendo órdenes del SCADA y registrando eventos en una base de datos PostgreSQL.
+Firmware en Rust para ESP32-S3 que controla una línea de producción automatizada de tapas plásticas. El sistema coordina tres robots vía MQTT: un **Delta** (clasificador), un **AMR** (transporte) y un **Cobot** (paletizado), recibiendo órdenes del SCADA y publicando eventos al broker.
 
 ## Estructura
 

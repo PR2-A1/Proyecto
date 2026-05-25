@@ -13,7 +13,7 @@ Broker: `broker.hivemq.com:1883`
 | `giirob/pr2-A1/devices/scada/action` | SCADA | ESP32 | `{"cmd":"set_mode","mode":"auto"}` | Cambiar a modo Auto |
 | `giirob/pr2-A1/devices/scada/action` | SCADA | ESP32 | `{"cmd":"set_mode","mode":"manual"}` | Cambiar a modo Manual |
 | `giirob/pr2-A1/devices/scada/action` | SCADA | ESP32 | `{"cmd":"status"}` | Solicitar estado del sistema |
-| `giirob/pr2-A1/devices/scada/action` | SCADA | ESP32 | `{"cmd":"reset"}` | Reiniciar todos los contadores y limpiar BD |
+| `giirob/pr2-A1/devices/scada/action` | SCADA | ESP32 | `{"cmd":"reset"}` | Reiniciar todos los contadores |
 | `giirob/pr2-A1/devices/scada/status` | ESP32 | SCADA | `{"mode":"auto","id_lote":"L0042","total_processed":47,"tolvas":{...},"pallets":{...},"device":"ESP32-S3"}` | Estado completo del sistema |
 | `giirob/pr2-A1/devices/scada/status` | ESP32 | SCADA | `{"event":"batch_complete","message":"Lote de producción completado","total":100,"device":"ESP32-S3"}` | Lote de producción completado |
 | `giirob/pr2-A1/devices/scada/status` | ESP32 | SCADA | `{"event":"pallet_full","id_palet":"P0001","color":"red","device":"ESP32-S3"}` | Pallet lleno — avisar al operario |
@@ -92,7 +92,7 @@ Broker: `broker.hivemq.com:1883`
 
 ---
 
-## Base de datos (Bridge MQTT-DB)
+## Eventos de datos (Bridge MQTT-DB — servicio externo)
 
 ### Escritura — `db/push`
 
@@ -112,7 +112,7 @@ Broker: `broker.hivemq.com:1883`
 | `giirob/pr2-A1/db/pull/response` | Bridge | ESP32 | `{"operarios":[{"id_operario":"OP001","nombre":"Carlos","apellido":"Martínez"},…]}` | Bridge responde con todos los operarios de la BD |
 
 > El ESP32 recibe la lista, escoge un operario y lo envía como `id_operario` en el evento `caja_paletizada`.  
-> El campo `color` se almacena en mayúsculas en la base de datos (`RED`, `BLUE`, etc.).  
+> El campo `color` se publica en mayúsculas (`RED`, `BLUE`, etc.).  
 > `codigo_etiqueta` tiene formato `ETQ0000001` (CHAR 10).  
 > `tapa_clasificada` se publica en lotes acumulados (contador `tapas_clasificadas_pending`) cada 500 ms mientras haya un `id_lote` activo.  
-> El `reset` borra solo los datos del lote activo (`id_lote`). Si no hay lote activo, no se envía nada a la BD.
+> El `reset` solo se publica si hay un `id_lote` activo.

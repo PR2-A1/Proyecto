@@ -3,16 +3,3 @@
 /target
 /Cargo.lock
 /.claude
-/mqtt_db_bridge
-/comunicaciones
-/Diagramas_flujo.md
-/gen_docx.py
-/ArchivosArduino
-/db_bridge
-/diagramaTarea.md
-/gen_mqtt_comparison_pdf.py
-/gen_task_diagram_pdf.py
-/iteraciones.md
-/sim_delta.py
-/task.md
-*.pdf

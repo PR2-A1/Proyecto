@@ -32,15 +32,15 @@ Firmware embebido para ESP32-S3 que controla la línea de producción automatiza
 
 ## 1. Visión general
 
-El ESP32-S3 actúa como controlador central de la célula de fabricación. Recibe órdenes del SCADA, genera tapas en RoboDK, valida la clasificación del Delta, coordina el transporte del AMR y el paletizado del Cobot, y publica eventos de persistencia al bridge MQTT-BD.
+El ESP32-S3 actúa como controlador central de la célula de fabricación. Recibe órdenes del SCADA, genera tapas en RoboDK, valida la clasificación del Delta, coordina el transporte del AMR y el paletizado del Cobot, y publica eventos MQTT al broker.
 
 ```
 SCADA ──MQTT──► ESP32-S3 ──MQTT──► RoboDK (simulación/spawn)
                     │   ◄──MQTT──── Delta (confirmación clasificación)
                     │   ──MQTT──►  AMR (transporte)
                     │   ──MQTT──►  Cobot (paletizado)
-                    │   ──MQTT──►  db/push (eventos BD)
-                    │   ──MQTT──►  db/pull (consultas BD)
+                    │   ──MQTT──►  db/push (eventos de datos)
+                    │   ──MQTT──►  db/pull (consultas de datos)
 ```
 
 ---
@@ -67,7 +67,7 @@ El firmware corre en un ESP32-S3 (Xtensa LX7 Dual-Core). La distribución de tar
 | `mpsc::sync_channel(64)` | mqtt_manager → logic_task | Cola FIFO de eventos de robots |
 | `Arc<Mutex<ControlState>>` | mqtt_manager ↔ logic_task | Estado compartido del sistema |
 | `Arc<AtomicBool>` emergency_stop | Todos ↔ Todos | Señal de parada de emergencia |
-| `PullSlot` `Arc<Mutex<Option<SyncSender>>>` | mqtt_manager ↔ logic_task | Canal temporal para respuestas BD |
+| `PullSlot` `Arc<Mutex<Option<SyncSender>>>` | mqtt_manager ↔ logic_task | Canal temporal para respuestas externas |
 | `Notification` + `AtomicBool` flags | ISRs → emergency_task | Señal de interrupción de botón |
 
 **Invariante de diseño:** `logic_task` es el único punto del sistema que publica mensajes MQTT de salida. El callback de Core 0 solo encola intenciones (flags en `ControlState`) que `logic_task` ejecuta en su próxima iteración.
@@ -125,7 +125,7 @@ El modo se cambia con `set_mode`. Cambiar de modo limpia `id_lote`.
 | `giirob/pr2-A1/devices/amr/status` | Reportes de posición del AMR |
 | `giirob/pr2-A1/devices/cobot/status` | Reportes de finalización del Cobot |
 | `giirob/pr2-A1/system/emergency/action` | Comandos de emergencia remotos |
-| `giirob/pr2-A1/db/pull/response` | Respuestas del bridge a consultas de la BD |
+| `giirob/pr2-A1/db/pull/response` | Respuestas a consultas de datos |
 
 **Publicados:**
 
@@ -137,7 +137,7 @@ El modo se cambia con `set_mode`. Cambiar de modo limpia `id_lote`.
 | `giirob/pr2-A1/devices/scada/status` | Estado del sistema y eventos al SCADA |
 | `giirob/pr2-A1/system/emergency/status` | Cambios de estado de emergencia |
 | `giirob/pr2-A1/db/push` | Eventos de caja, paletizado y tapa clasificada |
-| `giirob/pr2-A1/db/pull` | Consultas de datos al bridge (operarios) |
+| `giirob/pr2-A1/db/pull` | Consultas de datos (operarios) |
 
 ---
 
@@ -339,7 +339,7 @@ Namespace `tolva_counts`, claves `tolva_1` a `tolva_6` como `u64`.
 | `pallet_counts` | `[u64; 6]` | Cajas en el pallet actual por color |
 | `status_requested` | `bool` | Solicitud de estado pendiente |
 | `batch_complete_pending` | `bool` | Lote Auto completado, pendiente de publicar |
-| `reset_db_pending` | `bool` | Reset pendiente de publicar al bridge |
+| `reset_db_pending` | `bool` | Reset pendiente de publicar |
 | `tapas_clasificadas_pending` | `u32` | Tapas clasificadas pendientes de publicar |
 
 ---
@@ -358,7 +358,7 @@ main()
   │     wifi_ready     → AtomicBool (Wi-Fi listo?)
   │     emergency_stop → AtomicBool (emergencia activa?)
   │     control_state  → Arc<Mutex<ControlState>>
-  │     pull_slot      → Arc<Mutex<Option<SyncSender>>> (hueco consultas BD)
+  │     pull_slot      → Arc<Mutex<Option<SyncSender>>> (hueco consultas externas)
   │     event_tx/rx    → canal Core 0 → Core 1 (capacidad 64)
   │
   ├─ Lanza Wi-Fi y BLOQUEA hasta que conecta

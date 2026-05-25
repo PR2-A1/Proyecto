@@ -149,14 +149,6 @@ cargo run
 # Puerto típico: /dev/tty.usbserial-XXXX o /dev/tty.usbmodem-XXXX
 ```
 
-Para lanzar el firmware y el bridge juntos usar `run_all.sh` en lugar de `run_all.ps1`:
-
-```bash
-chmod +x run_all.sh   # solo la primera vez
-./run_all.sh
-```
-
-> `run_all.ps1` es solo para Windows. En macOS usar siempre `run_all.sh`.
 
 ---
 
