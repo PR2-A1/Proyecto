@@ -1,8 +1,11 @@
+//Librerias externas instaladas via Cargo
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     nvs::EspDefaultNvsPartition,
 };
+
+//Libreria estándar de Rust
 use std::{
     sync::{
         atomic::AtomicBool,
@@ -12,7 +15,7 @@ use std::{
     },
 };
 
-//Importación de módulos
+//Modulos internos del proyecto
 mod config;
 mod control_state;
 mod emergency_task;
@@ -20,6 +23,7 @@ mod logic_task;
 mod mqtt_manager;
 mod wifi_manager;
 
+//Función prinicipal del programa, inicializa periféricos, recursos compartidos y tareas necesarias para el funcionamiento del sistema.
 fn main() -> anyhow::Result<()> {
     //Inicialización de logger y parches necesarios para funcionamiento de las bibliotecas utilizadas.
     esp_idf_svc::sys::link_patches();
@@ -34,7 +38,7 @@ fn main() -> anyhow::Result<()> {
     let nvs_wifi = nvs.clone();
     let nvs_logic = nvs.clone();
 
-    //Inicialización de recursos compartidos
+    //Inicialización de recursos compartidos de conexión wifi y pines para emergencia.
     let wifi_ready = Arc::new(AtomicBool::new(false));
     let modem = peripherals.modem;
     let pins = peripherals.pins;
@@ -61,12 +65,16 @@ fn main() -> anyhow::Result<()> {
         }
     }
     
+    //Inicialización de recursos compartidos par estado de control y emergencia.
     let control_state = Arc::new(Mutex::new(state));
     let emergency_stop = Arc::new(AtomicBool::new(false));
     
+    //Inicialización de espacio vacío para consultas a la base de datos.
     let pull_slot = Arc::new(Mutex::new(None::<std::sync::mpsc::SyncSender<String>>));
+    //Inicialización de canal de transferencia de eventos del robot de core 0 a core 1
     let (event_tx, event_rx) = mpsc::sync_channel::<control_state::RobotEvent>(64);
 
+    //Conexión a MQTT y registro de callback compartiendo recursos del sistema,,
     let mqtt = Arc::new(Mutex::new(mqtt_manager::MqttManager::connect_and_subscribe_with_state(
         Arc::clone(&control_state),
         Arc::clone(&emergency_stop),
@@ -75,6 +83,7 @@ fn main() -> anyhow::Result<()> {
         event_tx,
     )?));
 
+    //Lanza logic_task en el core 1
     let _logic_handle = logic_task::spawn_logic_task(
         Arc::clone(&mqtt),
         Arc::clone(&emergency_stop),
@@ -84,7 +93,7 @@ fn main() -> anyhow::Result<()> {
         event_rx,
     )?;
 
-    //Tarea principal gestiona la emergencia.
+    //Ejecua la tarea de emergencia en el hilo principal y sin retorno
     emergency_task::run_emergency_task(
         Arc::clone(&mqtt),
         emergency_button_pin,

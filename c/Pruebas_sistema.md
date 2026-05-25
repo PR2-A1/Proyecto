@@ -11,8 +11,8 @@ Verificar que todos los servicios están activos antes de comenzar:
 | Servicio | Cómo arrancarlo | Señal de OK |
 |---|---|---|
 | PostgreSQL | `pg_ctl start` / servicio Windows | `psql -U postgres -c "\l"` muestra la BD |
-| Bridge Rust | `cd mqtt_db_bridge && cargo run` | Línea `Bridge listo, esperando mensajes...` |
-| Bridge Python | `cd python_bridge && python MqttListener.py` | Línea `pick_worker iniciado` |
+| Bridge BD (Python) | `cd db_bridge && python bridge.py` | Línea `Bridge listo — esperando mensajes MQTT...` |
+| Bridge RoboDK | `python MqttListener.py` (desde la carpeta robodk) | Línea `pick_worker iniciado` |
 | RoboDK | Abrir la escena `.rdk` | Delta presente, targets y `cap_template` visibles |
 | ESP32 | Flasheado y alimentado | LED de estado, conexión Wi-Fi activa |
 
@@ -110,11 +110,20 @@ Verificar `"mode": "manual"` en la respuesta de estado.
 { "cmd": "reset" }
 ```
 
-**Verificar:** todos los contadores de tolvas y pallets a 0, `id_lote` limpio. El modo no cambia.
+**Verificar en ESP32:** todos los contadores de tolvas y pallets a 0, `id_lote` limpio, modo sin cambio.
+
+**Verificar en BD:** el bridge Python reinicia `total_tapas_clasificadas = 0` en todos los lotes. **No elimina** cajas, pallets ni material_caja (a diferencia del bridge anterior).
+
+```sql
+SELECT id_lote, total_tapas_clasificadas FROM lote;
+-- Todos los lotes deben tener total_tapas_clasificadas = 0
+```
 
 ---
 
 ## Bloque 2 — Gestión de lotes (SCADA → Bridge → DB)
+
+> **Nota:** el bridge Python (`db_bridge/bridge.py`) no escucha `scada/action` — solo `db/push` y `db/pull`. Los tests de este bloque requieren insertar los lotes directamente por SQL o usar el bridge Rust anterior (`mqtt_db_bridge`).
 
 ### 2.1 Crear lote con proveedor
 <!-- Funciona correctamente -->
@@ -658,7 +667,7 @@ SELECT estado, id_operario FROM palet WHERE id_palet = 'P0001';
 }
 ```
 
-**Verificar en logs del bridge:** mensaje `Palet 11 cerrado sin id_operario`.
+**Verificar en logs del bridge:** mensaje `Palet <id> cerrado sin id_operario`.
 
 ```sql
 SELECT id_operario FROM palet WHERE id_palet = '00011';

@@ -39,11 +39,16 @@ pub const MQTT_TOPIC_COBOT_STATUS: &str = "giirob/pr2-A1/devices/cobot/status";
 //Colores válidos
 pub const VALID_COLORS: &[&str] = &["red", "green", "yellow", "blue", "white", "orange"];
 
-pub const AMR_TOLVA_THRESHOLD: u64 = 20;    // 20 tapas = 1 caja llena
+//Limite de tapas por tolva
+pub const AMR_TOLVA_THRESHOLD: u64 = 20;    
+//Tiempo estimado de entrega de tapas al AMR en segundos
 pub const AMR_ARRIVAL_DELAY_SECS: u64 = 6;
+//Nombre de la ubicación del almacén para el AMR
 pub const AMR_WAREHOUSE_LOCATION: &str = "cobot_pick";
+//Tiempo maximo de espera para que el AMR llegue 
 pub const AMR_TIMEOUT_SECS: u64 = 120;
-
-pub const PALLET_CAPACITY: u64 = 6;         // 2 cajas/nivel × 3 niveles
+//Capacidad de cajas por pallet
+pub const PALLET_CAPACITY: u64 = 6;       
+//Tiempo de espera para el cobot 
 pub const COBOT_TIMEOUT_SECS: u64 = 60;
 
