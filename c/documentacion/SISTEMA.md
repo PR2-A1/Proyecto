@@ -203,12 +203,10 @@ Incrementa `tolva_counts[color]`, `total_processed` y `tapas_clasificadas_pendin
 
 **Archivo:** `src/logic_task.rs` — Core 1, período 500 ms.
 
-1. **Spawn de tapas:** si hay tapas pendientes, genera `id_cap` único y publica `spawn` a RoboDK.
-2. **Procesamiento de Delta:** drena la cola de eventos `mpsc::sync_channel` y procesa cada `DeltaCompleted`.
-3. **Coordinación AMR:** detecta `tolva_counts[i] >= 20`, genera `id_caja`, envía `goto tolva_N`. Tras 6 s de espera post-llegada envía `goto cobot_pick`, publica `box_completed` y resetea la tolva en NVS.
-4. **Coordinación Cobot:** cuando `cobot_ready && !cobot_in_progress`, envía `start` al Cobot.
-5. **Publicación de estado:** consume flags de `ControlState` y publica las respuestas MQTT pendientes.
-6. **tapa_clasificada:** si hay tapas clasificadas pendientes y lote activo, publica a `db/push` en lotes acumulados.
+1. **Procesamiento de eventos:** drena la cola `mpsc::sync_channel` y procesa cada `DeltaCompleted`, `AmrArrived` y `CobotCompleted`.
+2. **Spawn de tapas:** si hay tapas pendientes, genera `id_cap` único y publica `spawn` a RoboDK.
+3. **Gestión del Cobot:** si hay un `cobot_completed_event` pendiente, actualiza el pallet, consulta operario (si aplica) y publica a `db/push`.
+4. **Publicación de estado:** consume todos los flags de `ControlState` (`status_requested`, `batch_complete_pending`, `reset_db_pending`, `tapas_clasificadas_pending`), coordina AMR y Cobot, y publica todas las respuestas MQTT pendientes en un solo bloque.
 
 Ver [§5 Ciclo de logic_task](#5-ciclo-de-logic_task) para el detalle de cada iteración.
 
@@ -255,23 +253,23 @@ AMR publica ARRIVED (location: cobot_pick)
 cobot_ready = true
 ```
 
-Timeout AMR: si no llega en 120 s (`AMR_TIMEOUT_SECS`), se cancelan `amr_pending_tolva`, `amr_dispatched_at`, `amr_id_caja` y `amr_caja_tolva`.
+Timeout AMR: si no llega en 120 s (`AMR_TIMEOUT_SECS`), se cancelan `amr_pending_tolva`, `amr_dispatched_at` y `amr_caja`.
 
 ---
 
 ### 2.10 Coordinación Cobot
 
-- Un pallet activo por color (`cobot_next_pallet[i]`, formato `P0001`).
-- `pallet_counts[i]` cuenta las cajas en el pallet actual.
+- Un pallet activo por color (`pallets[i]` = (id_pallet, cajas), formato `P0001`).
+- `pallets[i].1` cuenta las cajas en el pallet actual.
 - Solo una operación simultánea (`!cobot_in_progress`).
 
 Al recibir `completed`:
-1. `pallet_counts[color_index]++`
-2. Si `pallet_counts[i] >= PALLET_CAPACITY (6)`: cierra pallet, solicita operario vía `db/pull`, publica `caja_paletizada (estado=true, id_operario)`, notifica `pallet_full` al SCADA y avanza `cobot_next_pallet[i]`.
+1. `pallets[ci].1 += 1` — incrementa el contador de cajas del pallet activo para ese color.
+2. Si `pallets[ci].1 >= PALLET_CAPACITY (6)`: cierra pallet, solicita operario vía `db/pull`, publica `caja_paletizada (estado=true, id_operario)`, notifica `pallet_full` al SCADA y avanza `pallets[ci].0 += 6`, `pallets[ci].1 = 0`.
 3. Si `< 6`: publica `caja_paletizada (estado=false)`.
-4. Libera `cobot_in_progress`.
+4. `cobot_in_progress` ya fue liberado al encolar el evento.
 
-Timeout Cobot: si no responde en 60 s (`COBOT_TIMEOUT_SECS`), se limpian `cobot_in_progress`, `cobot_started_at`, `cobot_active_color` y `cobot_pending_caja`.
+Timeout Cobot: si no responde en 60 s (`COBOT_TIMEOUT_SECS`), se limpian `cobot_in_progress`, `cobot_started_at` y `cobot_pending`.
 
 ---
 
@@ -319,24 +317,19 @@ Namespace `tolva_counts`, claves `tolva_1` a `tolva_6` como `u64`.
 | `manual_remaining` | `u32` | Tapas manuales pendientes de confirmación |
 | `manual_color` | `String` | Color esperado en modo Manual |
 | `manual_spawn_pending` | `bool` | Flag para generar la siguiente tapa manual |
-| `expected_tapa` | `Option<ExpectedTapa>` | Color esperado de la próxima tapa |
 | `total_processed` | `u64` | Total de tapas procesadas |
 | `tolva_counts` | `[u64; 6]` | Tapas confirmadas por tolva (red=0..blue=5) |
 | `amr_pending_tolva` | `Option<usize>` | Tolva a la que se dirigió el AMR |
 | `amr_dispatched_at` | `Option<Instant>` | Momento de despacho del AMR (timeout) |
 | `amr_arrived_tolva` | `Option<usize>` | Tolva donde llegó el AMR |
 | `amr_arrived_at` | `Option<Instant>` | Momento de llegada del AMR a la tolva |
-| `amr_id_caja` | `Option<String>` | ID de la caja que transporta el AMR |
-| `amr_caja_tolva` | `Option<usize>` | Tolva de origen de la caja |
+| `amr_caja` | `Option<(usize, String)>` | Tolva de origen e ID de la caja que transporta el AMR |
 | `cobot_ready` | `bool` | AMR llegó a cobot_pick con caja lista |
 | `cobot_in_progress` | `bool` | Cobot ejecutando una operación |
 | `cobot_started_at` | `Option<Instant>` | Momento de inicio del Cobot (timeout) |
-| `cobot_next_pallet` | `[u32; 6]` | Número del pallet activo por color |
-| `cobot_pending_color` | `Option<String>` | Color de la caja que espera el Cobot |
-| `cobot_pending_caja` | `Option<String>` | ID de la caja que espera el Cobot |
-| `cobot_active_color` | `Option<String>` | Color de la operación en curso |
+| `cobot_pending` | `Option<(String, String)>` | Color e ID de la caja que el Cobot tiene pendiente |
 | `cobot_completed_event` | `Option<String>` | id_pallet del último completed del Cobot |
-| `pallet_counts` | `[u64; 6]` | Cajas en el pallet actual por color |
+| `pallets` | `[(u32, u64); 6]` | (ID de pallet activo, cajas en él) por color (red=0..blue=5) |
 | `status_requested` | `bool` | Solicitud de estado pendiente |
 | `batch_complete_pending` | `bool` | Lote Auto completado, pendiente de publicar |
 | `reset_db_pending` | `bool` | Reset pendiente de publicar |
@@ -440,13 +433,13 @@ Iteración N:
   │
   ├─ handle_cobot_completed — gestiona fin de paletizado
   │     ¿cobot_completed_event.take()?
-  │       → pallet_counts[color] += 1
+  │       → pallets[ci].1 += 1
   │       → ¿pallet lleno (>= 6)?
   │           → query_operarios: publica db/pull, espera db/pull/response (5s, PullSlot)
   │           → elige operario aleatoriamente
   │           → publica db/push {"event":"caja_paletizada", estado=true, id_operario}
   │           → publica scada/status {"event":"pallet_full"}
-  │           → pallet_counts[i] = 0, cobot_next_pallet[i]++
+  │           → pallets[i].1 = 0, pallets[i].0 += 6
   │       → ¿pallet abierto?
   │           → publica db/push {"event":"caja_paletizada", estado=false}
   │
@@ -474,7 +467,7 @@ Iteración N:
   │       ¿cobot en progreso > 60s timeout?
   │         → error log → resetea cobot_in_progress
   │
-  └─ sleep 500ms → siguiente iteración
+  └─ espera absoluta hasta completar 500ms → siguiente iteración
 ```
 
 ---
@@ -485,11 +478,12 @@ Iteración N:
 SCADA envía gen (color=red, modo Manual)
     │
     ▼
-ESP32: manual_spawn_pending = true, expected_tapa = {color: "red"}
+ESP32: manual_spawn_pending = true, manual_color = "red"
     │
     ▼
 logic_task detecta pending → genera id_cap="C0001"
 publica spawn (color=red, id_cap=C0001) → RoboDK
+manual_spawn_pending = false
     │
     ▼
 RoboDK genera tapa, Delta la clasifica en TOLVA_1
@@ -500,7 +494,7 @@ mqtt_manager encola DeltaCompleted en mpsc::sync_channel
     │
     ▼
 logic_task drena cola → tolva_counts[0]++, total_processed++
-tapas_clasificadas_pending++, manual_remaining--, expected_tapa = None
+tapas_clasificadas_pending++, manual_remaining--
 guarda NVS
 ```
 
@@ -543,15 +537,15 @@ Cobot paletiza → publica completed (id_pallet=P0001)
     │
     ▼
 mqtt_manager encola CobotCompleted → logic_task procesa en siguiente iteración
-pallet_counts[0]++ (red)
+pallets[0].1++ (red)
     │
-    ├── Si pallet_counts[0] >= 6:
+    ├── Si pallets[0].1 >= 6:
     │       query_operarios (db/pull) → espera respuesta → elige id_operario
     │       publica caja_paletizada (estado=true, id_operario) → db/push
     │       publica pallet_full (id_palet=P0001) → scada/status
-    │       pallet_counts[0] = 0, cobot_next_pallet[0]++
+    │       pallets[0].1 = 0, pallets[0].0 += 6
     │
-    └── Si pallet_counts[0] < 6:
+    └── Si pallets[0].1 < 6:
             publica caja_paletizada (estado=false) → db/push
 ```
 
@@ -570,7 +564,6 @@ pallet_counts[0]++ (red)
 | `AMR_ARRIVAL_DELAY_SECS` | `6` | Segundos de espera tras llegada del AMR a la tolva |
 | `AMR_WAREHOUSE_LOCATION` | `"cobot_pick"` | Ubicación del área del Cobot |
 | `AMR_TIMEOUT_SECS` | `120` | Timeout de espera para el AMR |
-| `COBOT_PALLET_ID_BASE` | `1` | Número del primer pallet (`P0001`) |
 | `PALLET_CAPACITY` | `6` | Cajas por pallet |
 | `COBOT_TIMEOUT_SECS` | `60` | Timeout de espera para el Cobot |
 | `VALID_COLORS` | `["red","green","yellow","blue","white","orange"]` | Colores aceptados |

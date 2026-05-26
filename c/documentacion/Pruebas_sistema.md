@@ -55,8 +55,8 @@ mosquitto_pub -h broker.hivemq.com -t "<topic>" -m '<json>'
 Respuesta esperada (campos clave):
 ```json
 {
-  "mode": "manual",
-  "id_lote": null,
+  "mode": "Manual",
+  "id_lote": "",
   "total_processed": 0,
   "auto_target": 0,
   "tolvas": { "TOLVA_1": 0, "TOLVA_2": 0, "TOLVA_3": 0, "TOLVA_4": 0, "TOLVA_5": 0, "TOLVA_6": 0 },
@@ -73,7 +73,7 @@ Respuesta esperada (campos clave):
 { "cmd": "set_mode", "mode": "auto" }
 ```
 
-Solicitar estado de nuevo (prueba 1.1) y verificar que `"mode": "auto"`.
+Solicitar estado de nuevo (prueba 1.1) y verificar que `"mode": "Auto"`.
 
 ---
 
@@ -83,7 +83,7 @@ Solicitar estado de nuevo (prueba 1.1) y verificar que `"mode": "auto"`.
 { "cmd": "set_mode", "mode": "manual" }
 ```
 
-Verificar `"mode": "manual"` en la respuesta de estado.
+Verificar `"mode": "Manual"` en la respuesta de estado.
 
 ---
 
@@ -164,15 +164,16 @@ SELECT total_tapas_entrada FROM lote WHERE id_lote = 'L0020';
 ---
 
 ### 2.4 Alias de campo — `lote` en lugar de `id_lote`
-<!-- Funciona correctamente -->
-El bridge acepta ambas claves:
+<!-- ⚠️ Solo válido para el bridge — el ESP32 no reconoce la clave `lote` -->
+El bridge acepta ambas claves (`id_lote` y `lote`) al suscribirse directamente a `scada/action`.  
+**El ESP32 solo lee `id_lote`**: si se usa `lote`, `state.id_lote` queda como `None` y las tapas generadas no quedarán asociadas al lote en el estado interno del ESP32.
 ```json
 { "cmd": "gen", "lote": "L0022", "quantity": 10 }
 ```
 
 ```sql
 SELECT id_lote FROM lote WHERE id_lote = 'L0022';
--- Debe existir
+-- El lote puede existir en BD (creado por el bridge), pero el ESP32 no lo rastreará
 ```
 
 ---
@@ -194,6 +195,8 @@ SELECT COUNT(*) FROM lote WHERE id_lote = 'L0099';
 
 ## Bloque 3 — Modo Manual (ESP32 + RoboDK)
 
+> ⚠️ **Las pruebas 3.1–3.3 describen el prototipo anterior** que usaba `camera/data`, `delta/action` y comandos PICK explícitos. En el sistema actual el Delta clasifica directamente y reporta vía `delta/status`; el ESP32 no envía PICKs ni procesa `camera/data`. Estas pruebas se mantienen como referencia histórica y deben ser actualizadas cuando se defina el flujo real con RoboDK.
+
 ### 3.1 Generar una tapa roja
 <!-- Todavía no se sabe -->
 Asegurarse de estar en modo Manual (prueba 1.3) y tener el lote activo.
@@ -203,37 +206,23 @@ Asegurarse de estar en modo Manual (prueba 1.3) y tener el lote activo.
 { "cmd": "gen", "id_lote": "L0020", "color": "red", "quantity": 1 }
 ```
 
-**Secuencia esperada:**
-1. ESP32 publica SPAWN en `robodk/action` → `{"cmd":"spawn","color":"red","id_cap":"C0001"}`
-2. Python bridge crea tapa roja en RoboDK, la posiciona en `spawn_point`
-3. Python bridge publica en `camera/data` → `{"x":...,"y":...,"color":"red","precision":0.99,"id_cap":"C0001"}`
-4. ESP32 valida color (coincide con `red`) y publica PICK en `delta/action`
-5. Python bridge ejecuta pick: aproximación → descenso → subida → tolva → home
-6. SCADA publica confirmación en `scada/status` → `{"cmd":"done","id_cap":"C0001","tolva":"TOLVA_1"}`
-7. ESP32 incrementa `tolva_counts[0]`
+**Secuencia esperada (sistema actual):**
+1. ESP32 publica SPAWN en `robodk/action` → `{"cmd":"spawn","color":"red","id_cap":"C0001","device":"ESP32-S3"}`
+2. RoboDK genera la tapa; el Delta la clasifica en TOLVA_1
+3. Delta publica en `delta/status` → `{"status":"completed","color":"red","id_cap":"C0001"}`
+4. ESP32 incrementa `tolva_counts[0]`, `total_processed`, decrementa `manual_remaining`
 
 ---
 
 ### 3.2 Color incorrecto en modo Manual (tapa descartada)
 
-Con `expected_color = "red"`, forzar una detección de cámara de color diferente publicando manualmente en `camera/data`:
-
-**Topic:** `giirob/pr2-A1/devices/camera/data`
-```json
-{ "x": 10.5, "y": 8.2, "color": "blue", "precision": 0.98, "id_cap": "cap_X" }
-```
-
-**Verificar:** el ESP32 NO publica PICK (color no coincide). Monitorizar `delta/action` — no debe aparecer ningún mensaje.
+> ⚠️ Prueba del prototipo anterior. En el sistema actual no hay validación de color por el ESP32 antes de depositar en tolva; el Delta clasifica cada tapa en la tolva correcta independientemente.
 
 ---
 
 ### 3.3 Detección con precisión baja (descartada)
 
-```json
-{ "x": 10.5, "y": 8.2, "color": "red", "precision": 0.90, "id_cap": "cap_Y" }
-```
-
-**Verificar:** el ESP32 descarta la detección (precision ≤ 0.95). No se publica PICK.
+> ⚠️ Prueba del prototipo anterior. En el sistema actual no hay campo `precision` ni topic `camera/data`.
 
 ---
 
@@ -251,7 +240,7 @@ Cambiar a modo Auto y lanzar lote:
 2. Cada tapa aparece en RoboDK, es detectada por la "cámara" y clasificada por el Delta
 3. Al completar las 6 tapas, ESP32 publica en `scada/status`:
 ```json
-{ "event": "batch_complete", "total": 6, "id_lote": "L0020" }
+{ "event": "batch_complete", "message": "Lote de producción completado", "total": 6, "device": "ESP32-S3" }
 ```
 
 **Verificar estado tras completar:**
@@ -264,10 +253,10 @@ Cambiar a modo Auto y lanzar lote:
 
 ### 4.2 Protección contra desbordamiento de tolva
 
-Con el sistema en Auto, cuando `tolva_counts[i] >= 2` (umbral), el ESP32 deja de enviar PICKs para ese color hasta que el AMR vacíe la tolva.
+Con el sistema en Auto, cuando `tolva_counts[i] >= 20` (umbral `AMR_TOLVA_THRESHOLD`), el ESP32 deja de enviar SPAWNs para ese color hasta que el AMR vacíe la tolva.
 
 **Verificar en logs del ESP32:** mensaje de rechazo de tapa por tolva llena.
-**Verificar en `delta/action`:** no aparece PICK para la tolva saturada.
+**Verificar en `robodk/action`:** no aparece SPAWN para el color cuya tolva está saturada.
 
 ---
 
@@ -275,11 +264,11 @@ Con el sistema en Auto, cuando `tolva_counts[i] >= 2` (umbral), el ESP32 deja de
 
 ### 5.1 AMR enviado a tolva (automático)
 <!-- Funciona correctamente -->
-Cuando `tolva_counts[i] >= 2`, el ESP32 publica automáticamente:
+Cuando `tolva_counts[i] >= 20` (`AMR_TOLVA_THRESHOLD`), el ESP32 publica automáticamente:
 
 **Verificar en `amr/action`:**
 ```json
-{ "cmd": "goto", "location": "tolva_1" }
+{ "cmd": "goto", "location": "TOLVA_1" }
 ```
 
 ---
@@ -291,24 +280,24 @@ Cuando `tolva_counts[i] >= 2`, el ESP32 publica automáticamente:
 { "status": "arrived", "location": "TOLVA_1" }
 ```
 
-**Verificar en logs del ESP32:** registra llegada, inicia espera de 10 s.
+**Verificar en logs del ESP32:** registra llegada, inicia espera de 6 s.
 **Verificar en estado:** `amr_pending_tolva` y `amr_arrived_tolva` consistentes.
 
 ---
 
-### 5.3 AMR enviado a cobot_pick (automático tras 10 s)
+### 5.3 AMR enviado a cobot_pick (automático tras 6 s)
 <!-- Funciona correctamente -->
-Después de 10 s de la llegada, el ESP32 publica:
+Después de 6 s de la llegada, el ESP32 publica:
 
 **Verificar en `amr/action`:**
 ```json
 { "cmd": "goto", "location": "cobot_pick" }
 ```
 
-**Verificar en `db/push`:** se publica `BOX_COMPLETED`:
+**Verificar en `db/push`:** se publica `box_completed`:
 ```json
 {
-  "event": "BOX_COMPLETED",
+  "event": "box_completed",
   "id_caja": "CXXXX",
   "color": "red",
   "codigo_etiqueta": "ETQXXXXXXX",
@@ -378,9 +367,9 @@ SELECT id_caja, id_palet FROM caja WHERE id_palet = 'P0001';
 
 ---
 
-### 6.2 Cierre de pallet (12 cajas — operario asignado)
+### 6.2 Cierre de pallet (6 cajas — operario asignado)
 
-Tras 12 finalizaciones del Cobot para el mismo pallet, se activa el flujo de cierre:
+Tras 6 finalizaciones del Cobot para el mismo pallet, se activa el flujo de cierre:
 
 **Secuencia esperada:**
 1. ESP32 publica en `db/pull`:
@@ -422,11 +411,16 @@ WHERE p.id_palet = 'P0001';
 
 ### 6.3 Rotación de pallets
 
-Tras cerrar el pallet P0001, el siguiente `completed` del Cobot debe dirigirse al pallet P0002 (`PALLET_2`):
+Tras cerrar el pallet P0001 (rojo), el ESP32 ejecuta `pallets[0].0 += 6`. La próxima caja **roja** va al pallet P0007; las cajas de otros colores continúan en su pallet propio (P0002 = verde, P0003 = amarillo, etc.).
 
-**Verificar en `cobot/action`:**
+**Verificar en `cobot/action` para la próxima caja roja:**
 ```json
-{ "cmd": "start", "id_pallet": "P0002", "color": "red", "boxes_stacked": 0 }
+{ "cmd": "start", "id_pallet": "P0007", "color": "red", "boxes_stacked": 0 }
+```
+
+**Verificar en `cobot/action` para una caja verde (sin cambio):**
+```json
+{ "cmd": "start", "id_pallet": "P0002", "color": "green", "boxes_stacked": 0 }
 ```
 
 ---
@@ -461,7 +455,7 @@ Con emergencia activa, publicar:
 
 **Verificar:** el ESP32 NO procesa el spawn. No aparece ningún mensaje en `robodk/action`.
 
-> El bridge Rust SÍ procesa el mensaje (crea el lote en DB), porque el bridge no tiene estado de emergencia — solo el ESP32.
+> El bridge Python SÍ procesa el mensaje (crea el lote en DB), porque el bridge no tiene estado de emergencia — solo el ESP32.
 
 ---
 

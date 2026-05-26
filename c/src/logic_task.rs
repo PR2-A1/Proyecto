@@ -13,7 +13,7 @@ use std::{
         Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 //Modulos internos del proyecto
@@ -43,7 +43,10 @@ pub fn spawn_logic_task<'a: 'static>(
     let handle = thread::Builder::new()
         .name("logic-task".to_string())
         .spawn(move || {
+            let cycle_period = Duration::from_millis(500);
             loop {
+                let cycle_start = Instant::now();
+
                 //Si hay emergencia activa, no hace nada
                 if emergency_stop.load(Ordering::SeqCst) {
                     thread::sleep(Duration::from_millis(100));
@@ -53,14 +56,16 @@ pub fn spawn_logic_task<'a: 'static>(
                 while let Ok(event) = event_rx.try_recv() {
                     process_robot_event(event, &control_state, &nvs);
                 }
-                //Intenta generar tapas 
+                //Intenta generar tapas
                 try_spawn_caps(&mqtt, &control_state, &emergency_stop);
                 //Verifica si el cobot ha completado su tarea
                 handle_cobot_completed(&mqtt, &control_state, &pull_slot);
-                //Publica el estado actual 
+                //Publica el estado actual
                 publish_status(&mqtt, &control_state, &nvs);
-                //Espera un poco antes de la siguiente iteración 
-                thread::sleep(Duration::from_millis(500));
+                //Espera absoluta: duerme solo el tiempo restante del ciclo
+                if let Some(remaining) = cycle_period.checked_sub(cycle_start.elapsed()) {
+                    thread::sleep(remaining);
+                }
             }
         })?;
 

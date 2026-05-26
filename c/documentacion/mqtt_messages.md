@@ -18,7 +18,7 @@ Broker: `broker.hivemq.com:1883`
 | `giirob/pr2-A1/devices/scada/status` | ESP32 | SCADA | `{"event":"batch_complete","message":"Lote de producción completado","total":100,"device":"ESP32-S3"}` | Lote de producción completado |
 | `giirob/pr2-A1/devices/scada/status` | ESP32 | SCADA | `{"event":"pallet_full","id_palet":"P0001","color":"red","device":"ESP32-S3"}` | Pallet lleno — avisar al operario |
 
-> `id_lote` también acepta la clave `lote`. El campo `color` solo aplica en modo Manual.  
+> El campo `color` solo aplica en modo Manual.  
 > El estado completo incluye: `mode`, `id_lote`, `total_processed`, `auto_target`, `auto_spawned`, `auto_validated`, `manual_remaining`, `amr_pending_tolva`, `amr_arrived_tolva`, `amr_wait_seconds`, `pallets` (PALLET_1–6), `tolvas` (TOLVA_1–6).
 
 ---
