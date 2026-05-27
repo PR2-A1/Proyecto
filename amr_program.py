@@ -21,9 +21,11 @@ BLUE_FILLED_BOX_TEMPLATE_NAME = 'caja_azul_template'
 YELLOW_FILLED_BOX_TEMPLATE_NAME = 'caja_amarilla_template'
 WHITE_FILLED_BOX_TEMPLATE_NAME = 'caja_blanca_template'
 ORANGE_FILLED_BOX_TEMPLATE_NAME = 'caja_naranja_template'
+TOOL_NAME = 'Tool3'
 
 #ROBOT CONFIGURATION
 amr = RDK.Item(AMR_NAME, ITEM_TYPE_ROBOT)
+tool = RDK.Item(TOOL_NAME, ITEM_TYPE_TOOL)
 
 #TARGETS CONFIGURATION
 locations = [RDK.Item(RED_HOPPER_TARGET_NAME, ITEM_TYPE_TARGET),     RDK.Item(BLUE_HOPPER_TARGET_NAME, ITEM_TYPE_TARGET),
@@ -52,12 +54,12 @@ def check_position(mqtt, payload):
 		if location == locations[i].Name():
 			if amr.Pose() == locations[i].Pose():
 				spawn_filled_box(location)
-				amr.AttachClosest()
+				tool.AttachClosest()
 	
 	if location == place_target.Name():
-		amr.DetachAll()
+		tool.DetachAll()
 		time.sleep(15)
-		amr.AttachClosest()
+		tool.AttachClosest()
 			
 			
 def spawn_filled_box(location):
@@ -71,3 +73,4 @@ def spawn_filled_box(location):
 			new_box.setPoseAbs(locations[i].PoseAbs() * robomath.rotz(-90 * math.pi / 180) * robomath.rotx(90 * math.pi / 180))
 			empty_box.Delete()
 			new_box.setVisible(True)
+			break

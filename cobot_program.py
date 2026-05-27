@@ -1,7 +1,8 @@
 from robodk import robolink    # RoboDK API
 from robodk import robomath    # Robot toolbox
 from robolink import *
-import math, json
+import math, json, time
+import config
 RDK = robolink.Robolink()
 
 #NAMES CONFIGURATION
@@ -77,7 +78,7 @@ right_place_frame_pose = robomath.Mat([
 ])
 
 full_box_pick_frame_pose = robomath.Mat([
-	[ 0.0, 0.0, 1.0, 937.827],
+	[ 0.0, 0.0, 1.0, 907.827],
 	[ 0.0, 1.0, 0.0,   3.926],
 	[-1.0, 0.0, 0.0,  91.208],
 	[ 0.0, 0.0, 0.0,     1.0]
@@ -91,7 +92,18 @@ empty_box_pick_frame_pose = robomath.Mat([
 	[ 0.0,  0.0,  0.0,      1.0]
 ])
 
+def emergency_stop():
+	cobot.Stop()
+	external_axis.Stop()
+	
+def reset_emergency_stop():
+	cobot.setPoseFrame(cobot_base)
+	cobot.MoveJ(home_cobot, blocking = False)
+	item = tool.DetachClosest()
+	item.Delete()
+	external_axis.MoveL(pick_zone, blocking = False)
 
+#MAIN FUNCTION CALLED VIA mqtt_controller
 def palletizing_cycle(mqttc, payload):
 	pallet_id = payload.get("id_pallet", 0)
 	color     = payload.get("color", "").lower()
@@ -101,25 +113,20 @@ def palletizing_cycle(mqttc, payload):
 	spawn_empty_box()
 	external_axis.MoveL(pick_zone)
 	pick()
+	cobot.MoveJ(home_cobot)
 	
 	if color == "red" or color == "white":
 		place(zone_1, color, iteration)
 	elif color == "green" or color == "orange":
 		place(zone_2, color, iteration)
-	elif color == "white" or color == "yellow":
+	elif color == "blue" or color == "yellow":
 		place(zone_3, color, iteration)
 		
-	external_axis.MoveL(empty_box_pick_zone)
-	pick_frame.setPose(empty_box_pick_frame_pose)
-	pick()
-	pick_frame.setPose(full_box_pick_frame_pose)
-	external_axis.MoveL(pick_zone)
-	place_empty_box()
+	reload_empty_box()
 	
 	publish_finished(mqttc, pallet_id)
 
 
-#Function to move the external axis to the paletizing zone
 def place(palletizing_zone, color, box_iteration):
 	external_axis.MoveL(palletizing_zone)
 	direction = 0
@@ -132,7 +139,7 @@ def place(palletizing_zone, color, box_iteration):
 		direction = -1
 	
 	x = 170.0 #FIXED POSITION FOR THE X AXIS
-	y = direction * (box_offset + box_width * (box_iteration % 2))
+	y = direction * (box_offset + (box_width * int(box_iteration % 2)))
 	z = box_height * int((box_iteration - 1)/ 2) - z_offset
 	place_frame_pose = place_frame.Pose()
 	place_frame_pose.setPos([x, y, z])
@@ -155,31 +162,47 @@ def pick():
 	cobot.setPoseFrame(pick_frame)
 	
 	cobot.MoveJ(pre_pick_target)
+	time.sleep(0.005)
 	cobot.MoveL(pick_target)
-	
-	tool.AttachClosest()
+	time.sleep(0.005)
+	tool.AttachClosest('', 1000.0)
+	time.sleep(0.005)
 	cobot.MoveL(post_pick_target)
+	time.sleep(0.005)
 
 def place_empty_box():
 	cobot.setPoseFrame(pick_frame)
 	
 	cobot.MoveJ(pre_pick_target)
+	time.sleep(0.005)
 	cobot.MoveL(pick_target)
+	time.sleep(0.005)
 	
 	tool.DetachAll()
+	time.sleep(0.005)
 	cobot.MoveL(post_pick_target)
+	time.sleep(0.005)
+	cobot.MoveJ(home_cobot)
 	
 def spawn_empty_box():
 	template_box.Copy()
 	empty_box = template_box.Paste()
 	empty_box.setName('caja_vacia')
 	empty_box.setParentStatic(station_frame)
-	empty_box.setPoseAbs(robomath.transl(7149.384, 35.618, 115.618) * robomath.rotx(math.pi / 2))
+	empty_box.setPoseAbs(robomath.transl(7049.384, 35.618, 115.618) * robomath.rotx(math.pi / 2))
 	empty_box.setVisible(True)
 
-	
+def reload_empty_box():
+	external_axis.MoveL(empty_box_pick_zone)
+	time.sleep(0.005)
+	pick_frame.setPose(empty_box_pick_frame_pose)
+	pick()
+	cobot.MoveJ(home_cobot)
+	pick_frame.setPose(full_box_pick_frame_pose)
+	external_axis.MoveL(pick_zone)
+	time.sleep(0.005)
+	place_empty_box()
 
 def publish_finished(mqttc, pallet_id: int):
     msg = json.dumps({"status": "COMPLETED", "id_pallet": pallet_id})
     mqttc.publish(config.TOPIC_COBOT_STATUS, msg, qos=config.MQTT_QOS)
-    log.info("COMPLETED publicado — pallet_id=%d", pallet_id)	
