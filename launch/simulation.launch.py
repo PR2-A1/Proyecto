@@ -1,19 +1,25 @@
 """
 Simulation launch file: Gazebo Harmonic + MiR robot + Nav2.
 
-Starts Gazebo with the warehouse world (will be changed for 
-the final map), spawns the MiR, bridges Gazebo topics to 
-ROS 2, and launches the Nav2 stack.
+Starts Gazebo with the station world, spawns the MiR, bridges
+Gazebo topics to ROS 2, and launches the Nav2 stack.
 
 Usage:
-  # SLAM mode (build a map in the warehouse)
+  # SLAM mode (build a map in the default station world)
   ros2 launch mir_nav2_robodk simulation.launch.py
 
-  # Localization mode (with the warehouse map)
-  ros2 launch mir_nav2_robodk simulation.launch.py slam:=false
+  # Localization in the warehouse with its shipped map
+  ros2 launch mir_nav2_robodk simulation.launch.py slam:=false \\
+      world:=$(ros2 pkg prefix mir_nav2_robodk)/share/mir_nav2_robodk/worlds/warehouse.sdf \\
+      map:=$(ros2 pkg prefix mir_nav2_robodk)/share/mir_nav2_robodk/maps/warehouse.yaml
+
+  # Localization in the station world (requires a map you saved with
+  # nav2_map_server map_saver_cli, e.g. maps/station.yaml)
+  ros2 launch mir_nav2_robodk simulation.launch.py slam:=false map:=/path/to/station.yaml
 """
 
 import os
+
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -26,6 +32,7 @@ from launch.substitutions import (
     LaunchConfiguration,
     PathJoinSubstitution,
     Command,
+    EnvironmentVariable,
 )
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -38,9 +45,19 @@ def generate_launch_description():
     nav2_bringup_share = FindPackageShare('nav2_bringup')
     ros_gz_sim_share = FindPackageShare('ros_gz_sim')
 
+    # Both paths are needed:
+    #   - share/mir_nav2_robodk/models  -> resolves model://Station
+    #   - share/                        -> resolves model://mir_nav2_robodk/meshes/...
+    # Append (do not overwrite) so Gazebo's default model paths still work.
     gz_resource_path = SetEnvironmentVariable(
         'GZ_SIM_RESOURCE_PATH',
-        PathJoinSubstitution([pkg_share, os.pardir]),
+        [
+            PathJoinSubstitution([pkg_share, 'models']),
+            ':',
+            PathJoinSubstitution([pkg_share, os.pardir]),
+            ':',
+            EnvironmentVariable('GZ_SIM_RESOURCE_PATH', default_value=''),
+        ],
     )
 
     # Launch arguments
@@ -57,15 +74,24 @@ def generate_launch_description():
         description='Launch RViz2')
 
     world_arg = DeclareLaunchArgument(
-        'world', default_value=PathJoinSubstitution([pkg_share, 'worlds', 'warehouse.sdf']),
+        'world', default_value=PathJoinSubstitution([pkg_share, 'worlds', 'station.sdf']),
         description='Path to Gazebo world SDF file')
+
+    # Map yaml used only when slam:=False (localization mode). Must match the
+    # `world`. Defaults to warehouse.yaml since that is the only map shipped;
+    # if you want station.sdf with localization, generate maps/station.yaml
+    # first by running SLAM and saving with nav2_map_server map_saver_cli.
+    map_arg = DeclareLaunchArgument(
+        'map',
+        default_value=PathJoinSubstitution([pkg_share, 'maps', 'warehouse.yaml']),
+        description='Map yaml file for localization (used when slam:=False)')
 
     nav2_params_arg = DeclareLaunchArgument(
         'nav2_params_file',
         default_value=PathJoinSubstitution([pkg_share, 'config', 'nav2_params.yaml']),
         description='Nav2 parameters file')
 
-    spawn_x_arg = DeclareLaunchArgument('spawn_x', default_value='0.0')
+    spawn_x_arg = DeclareLaunchArgument('spawn_x', default_value='-0.5')
     spawn_y_arg = DeclareLaunchArgument('spawn_y', default_value='0.0')
     spawn_yaw_arg = DeclareLaunchArgument('spawn_yaw', default_value='0.0')
 
@@ -155,13 +181,14 @@ def generate_launch_description():
         launch_arguments=nav2_common.items(),
     )
 
-    # Nav2: localization mode.
+    # Nav2: localization mode (uses `map` to pick which yaml is loaded).
+    nav2_loc_args = {**nav2_common, 'map': LaunchConfiguration('map')}
     nav2_loc = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([nav2_bringup_share, 'launch', 'localization_launch.py'])
         ),
         condition=UnlessCondition(LaunchConfiguration('slam')),
-        launch_arguments=nav2_common.items(),
+        launch_arguments=nav2_loc_args.items(),
     )
 
     nav2_loc_nav = IncludeLaunchDescription(
@@ -188,6 +215,7 @@ def generate_launch_description():
         slam_arg,
         rviz_arg,
         world_arg,
+        map_arg,
         nav2_params_arg,
         spawn_x_arg,
         spawn_y_arg,

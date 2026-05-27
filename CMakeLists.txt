@@ -8,6 +8,7 @@ install(DIRECTORY
   launch
   maps
   meshes
+  models
   rviz
   urdf
   worlds
@@ -16,7 +17,6 @@ install(DIRECTORY
 
 install(PROGRAMS
   scripts/robodk_bridge.py
-  scripts/robodk_position_sender.py
   scripts/manual_goal_sender.py
   DESTINATION lib/${PROJECT_NAME}
 )
