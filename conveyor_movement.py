@@ -8,7 +8,7 @@ RDK = robolink.Robolink()
 frame_movimiento = RDK.Item('Frame Cinta', ITEM_TYPE_FRAME)
 
 #Parámetros de la cinta
-velocidad = 5.0
+velocidad = 3.0
 posicion_actual = 0.0
 posicion_maxima = 20000.0
 
@@ -16,8 +16,6 @@ while True:
     #Movimiento cinta (creditos a ETM97)
     posicion_actual += velocidad
     frame_movimiento.setPose(robomath.transl(posicion_actual, 0.0, 0.0))
-     
-
     if posicion_actual == posicion_maxima:
     
         RDK.Render(False)
