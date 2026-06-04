@@ -9,6 +9,22 @@ pub enum RobotEvent {
     DeltaCompleted { color: String, id_cap: String },
     AmrArrived     { location: String },
     CobotCompleted { id_pallet: String },
+    //Evento de auditoría: comando SCADA recibido para registrar en la colección NoSQL comandos_scada
+    ScadaCommandLog {
+        cmd: String,
+        parametros: serde_json::Value,
+        resultado: String,
+    },
+}
+
+//Tracking de un despacho del AMR en vuelo, conservado hasta llegada al almacén o timeout para alimentar la colección NoSQL despachos_amr
+#[derive(Debug, Clone)]
+pub struct AmrDespacho {
+    pub id_caja: String,
+    pub tolva_label: String,
+    pub color: String,
+    pub dispatched_at: std::time::Instant,
+    pub arrived_tolva_at: Option<std::time::Instant>,
 }
 
 //Implementacion de interfaces para Mode
@@ -47,6 +63,12 @@ pub struct ControlState {
     pub batch_complete_pending: bool,                       //Indica si el lote de producción fue completado y hay que notificar al SCADA
     pub reset_db_pending: bool,                             //Indica si hay un reset de BD pendiente por enviar al bridge
     pub tapas_clasificadas_pending: u32,                    //Tapas clasificadas pendientes de notificar al bridge
+    pub tolva_alert_state: [u8; 6],                         //Estado de alerta NoSQL por tolva (0=ninguna, 1=cerca_limite emitida, 2=overflow emitida)
+    pub emergency_started_at: Option<std::time::Instant>,   //Marca de inicio de la emergencia activa para calcular duración
+    pub emergency_origin: Option<String>,                   //Origen de la emergencia activa ("boton_fisico"|"mqtt_scada")
+    pub emergency_event_pending: Option<(u64, String, String)>, //Evento de emergencia resuelto pendiente de publicar (duracion_segs, origen, resuelto_por)
+    pub amr_despacho_in_flight: Option<AmrDespacho>,        //Despacho del AMR en curso preservado hasta llegada al almacén
+    pub last_auto_spawn_at: Option<std::time::Instant>,     //Marca del último spawn en modo Auto para espaciar los envíos a RoboDK
 }
 
 //Implementacion de valores por defecto para ControlState
@@ -78,6 +100,12 @@ impl Default for ControlState {
             batch_complete_pending: false,
             reset_db_pending: false,
             tapas_clasificadas_pending: 0,
+            tolva_alert_state: [0; 6],
+            emergency_started_at: None,
+            emergency_origin: None,
+            emergency_event_pending: None,
+            amr_despacho_in_flight: None,
+            last_auto_spawn_at: None,
         }
     }
 }
@@ -98,6 +126,7 @@ impl ControlState {
         for count in self.tolva_counts.iter_mut() {
             *count = 0;
         }
+        self.tolva_alert_state = [0; 6];
     }
     //Función pública para cargar contadores de tolva almacenados en la NVS
     pub fn load_tolva_counts(nvs: &EspDefaultNvsPartition) -> Result<[u64; 6], EspError> {

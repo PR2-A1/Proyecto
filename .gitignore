@@ -9,3 +9,10 @@ c/target/
 **/*.pyc
 **/*.pyo
 
+# Configuración local de Claude Code
+.claude/
+
+# Artefactos de embuild (ESP-IDF)
+.embuild/
+c/.embuild/
+

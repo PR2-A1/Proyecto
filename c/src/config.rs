@@ -1,7 +1,7 @@
 
 //Creedenciales para la red 
-pub const WIFI_SSID: &str = "HUAWEI-2.4G-pXj3";
-pub const WIFI_PASS: &str = "779JAFqe";
+pub const WIFI_SSID: &str = "WIFI_GIIROB";
+pub const WIFI_PASS: &str = "PASSWORD_GIIROB";
 
 //Credenciales para el MQTT
 pub const MQTT_URL: &str = "mqtt://broker.hivemq.com:1883";
@@ -27,6 +27,7 @@ pub const MQTT_TOPIC_COBOT_ACTION: &str = "giirob/pr2-A1/devices/cobot/action";
 pub const MQTT_TOPIC_DB_PUSH: &str = "giirob/pr2-A1/db/push";
 pub const MQTT_TOPIC_DB_PULL: &str = "giirob/pr2-A1/db/pull";
 pub const MQTT_SUB_TOPIC_DB_PULL_RESPONSE: &str = "giirob/pr2-A1/db/pull/response";
+pub const MQTT_TOPIC_NOSQL_PUSH: &str = "giirob/pr2-A1/nosql/push";
 
 //Topics para recibir
 pub const MQTT_TOPIC_SCADA_ACTION: &str = "giirob/pr2-A1/devices/scada/action";
@@ -40,7 +41,9 @@ pub const MQTT_TOPIC_COBOT_STATUS: &str = "giirob/pr2-A1/devices/cobot/status";
 pub const VALID_COLORS: &[&str] = &["red", "green", "yellow", "blue", "white", "orange"];
 
 //Limite de tapas por tolva
-pub const AMR_TOLVA_THRESHOLD: u64 = 20;    
+pub const AMR_TOLVA_THRESHOLD: u64 = 20;
+//Umbral de alerta cerca del límite para la colección alertas_tolva (NoSQL)
+pub const TOLVA_ALERT_NEAR_LIMIT: u64 = 18;
 //Tiempo estimado de entrega de tapas al AMR en segundos
 pub const AMR_ARRIVAL_DELAY_SECS: u64 = 6;
 //Nombre de la ubicación del almacén para el AMR
@@ -49,6 +52,8 @@ pub const AMR_WAREHOUSE_LOCATION: &str = "cobot_pick";
 pub const AMR_TIMEOUT_SECS: u64 = 120;
 //Capacidad de cajas por pallet
 pub const PALLET_CAPACITY: u64 = 6;       
-//Tiempo de espera para el cobot 
+//Tiempo de espera para el cobot
 pub const COBOT_TIMEOUT_SECS: u64 = 60;
+//Tiempo mínimo entre spawns en modo Auto (ms) para no saturar a RoboDK
+pub const AUTO_SPAWN_DELAY_MS: u64 = 2000;
 

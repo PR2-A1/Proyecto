@@ -10,12 +10,13 @@ Verificar que todos los servicios están activos antes de comenzar:
 
 | Servicio | Cómo arrancarlo | Señal de OK |
 |---|---|---|
-| Bridge BD | Ver rama del bridge (servicio externo) | Línea `Bridge listo — esperando mensajes MQTT...` |
+| Bridge BD (PostgreSQL + MongoDB) | `python bridge.py` (servicio externo) | Líneas `PostgreSQL conectado`, `MongoDB (NoSQL) conectado` y `Bridge listo — esperando mensajes MQTT...` |
 | Bridge RoboDK | `python MqttListener.py` (desde la carpeta robodk) | Línea `pick_worker iniciado` |
+| Confirmador Delta | `python delta_confirmador.py` (si RoboDK no publica `delta/status`) | Línea `Confirmador listo — confirmando una tapa cada 0.5 s` |
 | RoboDK | Abrir la escena `.rdk` | Delta presente, targets y `cap_template` visibles |
 | ESP32 | Flasheado y alimentado | LED de estado, conexión Wi-Fi activa |
 
-> Las verificaciones de PostgreSQL a lo largo de esta guía requieren el bridge activo. El código del bridge y la configuración de la BD están en otra rama del repositorio.
+> Las verificaciones de PostgreSQL y MongoDB a lo largo de esta guía requieren el bridge activo. El bridge (`bridge.py`) gestiona ambas bases: eventos relacionales (`db/push`, `db/pull`) y documentales (`nosql/push`).
 
 Para monitorizar todos los mensajes MQTT del sistema en tiempo real:
 ```bash
@@ -298,7 +299,7 @@ Después de 6 s de la llegada, el ESP32 publica:
 ```json
 {
   "event": "box_completed",
-  "id_caja": "CXXXX",
+  "id_caja": "BXXXX",
   "color": "red",
   "codigo_etiqueta": "ETQXXXXXXX",
   "estado": true,
@@ -350,7 +351,7 @@ Tras `cobot_ready = true`, el ESP32 envía `start` al Cobot. Simular finalizaci�
 ```json
 {
   "event": "caja_paletizada",
-  "id_caja": "CXXXX",
+  "id_caja": "BXXXX",
   "id_palet": "P0001",
   "id_color": "RED",
   "estado": false
@@ -384,7 +385,7 @@ Tras 6 finalizaciones del Cobot para el mismo pallet, se activa el flujo de cier
 ```json
 {
   "event": "caja_paletizada",
-  "id_caja": "CXXXX",
+  "id_caja": "BXXXX",
   "id_palet": "P0001",
   "id_color": "RED",
   "estado": true,
@@ -436,8 +437,10 @@ Tras cerrar el pallet P0001 (rojo), el ESP32 ejecuta `pallets[0].0 += 6`. La pr�
 
 **Verificar en `emergency/status`:**
 ```json
-{ "status": "emergency_active", "source": "SCADA" }
+{ "status": "emergency_active", "source": "mqtt_action", "device": "ESP32-S3" }
 ```
+
+> El ESP32 **no** lee el campo `source` del mensaje entrante. Para toda emergencia recibida por MQTT publica `"source": "mqtt_action"` (solo los botones físicos producen `"emergency_button"` / `"resume_button"`).
 
 **Verificar comportamiento:**
 - El Python bridge descarta picks nuevos y vacía la cola de picks pendientes
@@ -468,7 +471,7 @@ Con emergencia activa, publicar:
 
 **Verificar en `emergency/status`:**
 ```json
-{ "status": "emergency_inactive", "source": "SCADA" }
+{ "status": "emergency_inactive", "source": "mqtt_action", "device": "ESP32-S3" }
 ```
 
 El Python bridge vuelve a aceptar picks.
@@ -483,10 +486,10 @@ El Python bridge vuelve a aceptar picks.
 
 **Verificar en `emergency/status`:**
 ```json
-{ "status": "emergency_active", "source": "AMR" }
+{ "status": "emergency_active", "source": "mqtt_action", "device": "ESP32-S3" }
 ```
 
-**Verificar:** mismo comportamiento que 7.1. El campo `source` y `reason` son informativos.
+**Verificar:** mismo comportamiento que 7.1. El ESP32 ignora `source` y `reason` del mensaje entrante; en `emergency/status` siempre reporta `"mqtt_action"` para emergencias por MQTT.
 
 ---
 
@@ -606,7 +609,7 @@ Tras la prueba 8.4, publicar de nuevo:
 
 ```sql
 SELECT id_palet FROM caja WHERE id_caja = 'T0001';
--- DEBE seguir siendo '00010' — el ON CONFLICT no toca id_palet
+-- DEBE seguir siendo 'P0001' — el ON CONFLICT no toca id_palet
 ```
 
 ---
@@ -631,23 +634,24 @@ SELECT estado, id_operario FROM palet WHERE id_palet = 'P0001';
 
 ---
 
-### 8.7 Cerrar pallet sin `id_operario` (warning, sin fallo)
+### 8.7 Cerrar pallet sin `id_operario` (sin fallo)
 
 ```json
 {
   "event": "caja_paletizada",
   "id_caja": "T0001",
-  "id_palet": 11,
-  "codigo_palet": "PALET000011",
+  "id_palet": "P0011",
   "id_color": "YELLOW",
   "estado": true
 }
 ```
 
-**Verificar en logs del bridge:** mensaje `Palet <id> cerrado sin id_operario`.
+> El bridge solo asigna `id_operario` cuando llega `estado=true` **y** el campo `id_operario` está presente (`if estado and id_operario`). Si falta, el pallet se cierra sin operario y no hay error. `id_palet` debe ser string (el bridge hace `.strip()` sobre él).
+
+**Verificar en logs del bridge:** `SQL: Paletizado caja=T0001 palet=P0011`.
 
 ```sql
-SELECT id_operario FROM palet WHERE id_palet = '00011';
+SELECT id_operario FROM palet WHERE id_palet = 'P0011';
 -- NULL — no se asignó
 ```
 
@@ -686,6 +690,157 @@ esto no es json
 
 ---
 
+## Bloque 9 — Eventos NoSQL (Bridge MQTT-MongoDB)
+
+> El ESP32 publica todos los eventos documentales en un único topic `giirob/pr2-A1/nosql/push` con el formato `{"coleccion":"<nombre>","data":{...}}`. El bridge enruta a la colección de MongoDB indicada y añade automáticamente el campo `_ts_recepcion`. Solo se aceptan las 6 colecciones permitidas; cualquier otra se descarta con warning.
+
+Para monitorizar lo que publica el ESP32:
+```bash
+mosquitto_sub -h broker.hivemq.com -t "giirob/pr2-A1/nosql/push" -v
+```
+
+Las verificaciones en MongoDB usan `mongosh` sobre la base `pr2_nosql_db`.
+
+### 9.1 `eventos_cinta` — entrada y salida
+
+Generar una tapa (modo Manual, prueba 3.1) y confirmarla con el Delta (o con `delta_confirmador.py`).
+
+**Secuencia esperada en `nosql/push`:**
+1. Al hacer spawn (sensor de entrada):
+```json
+{ "coleccion": "eventos_cinta", "data": { "sensor": "entrada", "id_cap": "C0001", "evento": "deteccion" } }
+```
+2. Al confirmar el Delta (sensor de salida):
+```json
+{ "coleccion": "eventos_cinta", "data": { "sensor": "salida", "id_cap": "C0001", "evento": "deteccion" } }
+```
+
+**Verificar en MongoDB:**
+```js
+db.eventos_cinta.find({ id_cap: "C0001" }).sort({ _ts_recepcion: 1 })
+// Dos documentos: sensor "entrada" y luego "salida"; cada uno con _ts_recepcion
+```
+
+---
+
+### 9.2 `alertas_tolva` — cerca_limite y overflow
+
+Llenar una tolva (mismo color repetido) hasta cruzar los umbrales.
+
+**Secuencia esperada en `nosql/push`:**
+- Al llegar a 18 tapas (`TOLVA_ALERT_NEAR_LIMIT`):
+```json
+{ "coleccion": "alertas_tolva", "data": { "tolva": "TOLVA_1", "nivel_actual": 18, "umbral": 20, "tipo": "cerca_limite" } }
+```
+- Al llegar a 20 tapas (`AMR_TOLVA_THRESHOLD`):
+```json
+{ "coleccion": "alertas_tolva", "data": { "tolva": "TOLVA_1", "nivel_actual": 20, "umbral": 20, "tipo": "overflow" } }
+```
+
+> Cada tipo se emite **una sola vez** por ciclo de llenado (`tolva_alert_state`). El estado se reinicia cuando el AMR vacía la tolva o tras un `reset`.
+
+**Verificar en MongoDB:**
+```js
+db.alertas_tolva.find({ tolva: "TOLVA_1" })
+// Un documento "cerca_limite" y uno "overflow", sin duplicados
+```
+
+---
+
+### 9.3 `despachos_amr` — completado
+
+Completar un ciclo del AMR (pruebas 5.1–5.4: despacho → llegada tolva → espera → llegada `cobot_pick`).
+
+**Esperado en `nosql/push`** al llegar el AMR a `cobot_pick`:
+```json
+{ "coleccion": "despachos_amr", "data": { "id_caja": "B0001", "tolva": "TOLVA_1", "color": "red", "duracion_total_segs": 70, "estado": "completado" } }
+```
+
+**Verificar en MongoDB:**
+```js
+db.despachos_amr.find().sort({ _ts_recepcion: -1 }).limit(1)
+// estado="completado", duracion_total_segs > 0
+```
+
+> **Timeout:** si el AMR no llega a la tolva en 120 s, se publica el mismo documento con `"estado": "timeout"`.
+
+---
+
+### 9.4 `ciclos_cobot` — completado
+
+Tras `cobot_ready`, el ESP32 ordena `start`. Simular la finalización (prueba 6.1):
+```json
+{ "status": "completed", "id_pallet": "P0001" }
+```
+
+**Esperado en `nosql/push`:**
+```json
+{ "coleccion": "ciclos_cobot", "data": { "id_pallet": "P0001", "id_caja": "B0001", "color": "red", "duracion_segs": 18, "estado": "completado" } }
+```
+
+**Verificar en MongoDB:**
+```js
+db.ciclos_cobot.find().sort({ _ts_recepcion: -1 }).limit(1)
+// estado="completado", duracion_segs = tiempo entre start y completed
+```
+
+> **Timeout:** si el cobot no responde en 60 s, se publica con `"estado": "timeout"`.
+
+---
+
+### 9.5 `emergencias` — al resolver
+
+Activar emergencia (prueba 7.1), esperar unos segundos y reanudar (prueba 7.3).
+
+**Esperado en `nosql/push`** únicamente al reanudar:
+```json
+{ "coleccion": "emergencias", "data": { "duracion_segs": 12, "origen": "mqtt_scada", "resuelto_por": "mqtt_scada" } }
+```
+
+> El documento se publica **solo al resolverse** la emergencia, con la duración total. `origen`/`resuelto_por` valen `"boton_fisico"` (botones GPIO38/39) o `"mqtt_scada"` (emergencia por MQTT).
+
+**Verificar en MongoDB:**
+```js
+db.emergencias.find().sort({ _ts_recepcion: -1 }).limit(1)
+// duracion_segs ≈ tiempo entre estop y resume
+```
+
+---
+
+### 9.6 `comandos_scada` — auditoría
+
+Enviar cualquier comando al SCADA (`gen`, `set_mode`, `status`, `reset`).
+
+**Esperado en `nosql/push`** por cada comando:
+```json
+{ "coleccion": "comandos_scada", "data": { "cmd": "gen", "parametros": { "quantity": 10, "id_lote": "L0001" }, "resultado": "ok" } }
+```
+
+Con emergencia activa, el mismo comando se registra como rechazado:
+```json
+{ "coleccion": "comandos_scada", "data": { "cmd": "gen", "parametros": {...}, "resultado": "rechazado_emergencia" } }
+```
+
+> `parametros` es el JSON original sin el campo `cmd`. `resultado` solo vale `"ok"` o `"rechazado_emergencia"`.
+
+**Verificar en MongoDB:**
+```js
+db.comandos_scada.find().sort({ _ts_recepcion: -1 }).limit(5)
+```
+
+---
+
+### 9.7 Colección no permitida (descartada)
+
+Publicar manualmente a una colección no listada:
+```bash
+mosquitto_pub -h broker.hivemq.com -t "giirob/pr2-A1/nosql/push" -m '{"coleccion":"inventada","data":{"x":1}}'
+```
+
+**Verificar en logs del bridge:** `Intento de inserción en colección NoSQL no permitida o no definida: 'inventada'`. No se inserta nada en MongoDB.
+
+---
+
 ## Limpieza de datos de prueba
 
 ```sql
@@ -697,4 +852,11 @@ DELETE FROM proveedor_material               WHERE lote IN ('L0020', 'L0021', 'L
 DELETE FROM lote                             WHERE id_lote IN ('L0020', 'L0021', 'L0022');
 DELETE FROM operario                         WHERE id_operario IN ('OP001', 'OP002', 'OP003', 'OP004', 'OP005');
 DELETE FROM proveedor                        WHERE num_proveedor IN ('P0001','P0002','P0003','P0004','P0005');
+```
+
+**Limpieza de las colecciones NoSQL (MongoDB):**
+```js
+// Vacía las 6 colecciones de prueba (mongosh sobre pr2_nosql_db)
+["eventos_cinta","alertas_tolva","despachos_amr","ciclos_cobot","emergencias","comandos_scada"]
+  .forEach(c => db[c].deleteMany({}));
 ```

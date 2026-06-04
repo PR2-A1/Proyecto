@@ -92,6 +92,73 @@ Broker: `broker.hivemq.com:1883`
 
 ---
 
+## Eventos NoSQL (Bridge MQTT-MongoDB)
+
+Todos los documentos NoSQL se publican en un único topic; el bridge los enruta a la colección indicada en el campo `coleccion`.
+
+### Escritura — `nosql/push`
+
+**Topic único:** `giirob/pr2-A1/nosql/push`
+
+**Formato del payload:**
+```json
+{
+  "coleccion": "<nombre_coleccion>",
+  "data": { ...documento... }
+}
+```
+
+El bridge añade automáticamente `_ts_recepcion` al insertar.
+
+#### Colección `eventos_cinta`
+
+| Emisor | Trigger | Mensaje |
+|---|---|---|
+| ESP32 | Spawn de tapa (sensor entrada) | `{"coleccion":"eventos_cinta","data":{"sensor":"entrada","id_cap":"C0042","evento":"deteccion"}}` |
+| ESP32 | Delta confirma clasificación (sensor salida) | `{"coleccion":"eventos_cinta","data":{"sensor":"salida","id_cap":"C0042","evento":"deteccion"}}` |
+
+#### Colección `alertas_tolva`
+
+| Emisor | Trigger | Mensaje |
+|---|---|---|
+| ESP32 | `tolva_counts[i] >= TOLVA_ALERT_NEAR_LIMIT (18)` | `{"coleccion":"alertas_tolva","data":{"tolva":"TOLVA_3","nivel_actual":18,"umbral":20,"tipo":"cerca_limite"}}` |
+| ESP32 | `tolva_counts[i] >= AMR_TOLVA_THRESHOLD (20)` | `{"coleccion":"alertas_tolva","data":{"tolva":"TOLVA_3","nivel_actual":20,"umbral":20,"tipo":"overflow"}}` |
+
+> Cada tipo de alerta se emite una sola vez por ciclo de llenado. El estado se reinicia cuando el AMR vacía la tolva.
+
+#### Colección `despachos_amr`
+
+| Emisor | Trigger | Mensaje |
+|---|---|---|
+| ESP32 | AMR llega a `cobot_pick` (ciclo completo) | `{"coleccion":"despachos_amr","data":{"id_caja":"B0012","tolva":"TOLVA_1","color":"red","duracion_total_segs":70,"estado":"completado"}}` |
+| ESP32 | Timeout AMR (> 120 s sin llegar a tolva) | `{"coleccion":"despachos_amr","data":{"id_caja":"B0012","tolva":"TOLVA_1","color":"red","duracion_total_segs":120,"estado":"timeout"}}` |
+
+#### Colección `ciclos_cobot`
+
+| Emisor | Trigger | Mensaje |
+|---|---|---|
+| ESP32 | `cobot/status completed` recibido | `{"coleccion":"ciclos_cobot","data":{"id_pallet":"P0007","id_caja":"B0012","color":"red","duracion_segs":18,"estado":"completado"}}` |
+| ESP32 | Timeout Cobot (> 60 s sin completar) | `{"coleccion":"ciclos_cobot","data":{"id_pallet":"P0007","id_caja":"B0012","color":"red","duracion_segs":60,"estado":"timeout"}}` |
+
+#### Colección `emergencias`
+
+| Emisor | Trigger | Mensaje |
+|---|---|---|
+| ESP32 | Transición `emergency_stop = false` (resolución) | `{"coleccion":"emergencias","data":{"duracion_segs":150,"origen":"boton_fisico","resuelto_por":"boton_fisico"}}` |
+
+> El documento se publica únicamente al resolver la emergencia, con la duración total acumulada. Valores válidos para `origen` y `resuelto_por`: `"boton_fisico"` o `"mqtt_scada"`.
+
+#### Colección `comandos_scada`
+
+| Emisor | Trigger | Mensaje |
+|---|---|---|
+| ESP32 | Cualquier comando recibido en `scada/action` | `{"coleccion":"comandos_scada","data":{"cmd":"gen","parametros":{"mode":"AUTO","quantity":10,"id_lote":"L0001"},"resultado":"ok"}}` |
+| ESP32 | Comando recibido con emergencia activa | `{"coleccion":"comandos_scada","data":{"cmd":"gen","parametros":{...},"resultado":"rechazado_emergencia"}}` |
+
+> Los `parametros` son el JSON original sin el campo `cmd`. Valores válidos para `resultado`: `"ok"` o `"rechazado_emergencia"`.
+
+---
+
 ## Eventos de datos (Bridge MQTT-DB — servicio externo)
 
 ### Escritura — `db/push`

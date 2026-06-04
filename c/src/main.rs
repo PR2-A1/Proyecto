@@ -101,5 +101,6 @@ fn main() -> anyhow::Result<()> {
         emergency_led_pin,
         emergency_buzzer_pin,
         emergency_stop,
+        control_state,
     )
 }

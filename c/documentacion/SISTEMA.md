@@ -20,7 +20,8 @@ Firmware embebido para ESP32-S3 que controla la línea de producción automatiza
    - [Coordinación Cobot](#210-coordinación-cobot)
    - [Sistema de emergencia](#211-sistema-de-emergencia)
    - [Persistencia NVS](#212-persistencia-nvs)
-   - [Estado compartido (ControlState)](#213-estado-compartido-controlstate)
+   - [Integración NoSQL (MongoDB)](#213-integración-nosql-mongodb)
+   - [Estado compartido (ControlState)](#214-estado-compartido-controlstate)
 3. [Secuencia de arranque](#3-secuencia-de-arranque)
 4. [Ciclo de emergency_task](#4-ciclo-de-emergency_task)
 5. [Ciclo de logic_task](#5-ciclo-de-logic_task)
@@ -39,8 +40,9 @@ SCADA ──MQTT──► ESP32-S3 ──MQTT──► RoboDK (simulación/spawn
                     │   ◄──MQTT──── Delta (confirmación clasificación)
                     │   ──MQTT──►  AMR (transporte)
                     │   ──MQTT──►  Cobot (paletizado)
-                    │   ──MQTT──►  db/push (eventos de datos)
-                    │   ──MQTT──►  db/pull (consultas de datos)
+                    │   ──MQTT──►  db/push (eventos relacionales — PostgreSQL)
+                    │   ──MQTT──►  db/pull (consultas relacionales)
+                    │   ──MQTT──►  nosql/push (eventos documentales — MongoDB)
 ```
 
 ---
@@ -136,8 +138,9 @@ El modo se cambia con `set_mode`. Cambiar de modo limpia `id_lote`.
 | `giirob/pr2-A1/devices/cobot/action` | Órdenes de paletizado al Cobot |
 | `giirob/pr2-A1/devices/scada/status` | Estado del sistema y eventos al SCADA |
 | `giirob/pr2-A1/system/emergency/status` | Cambios de estado de emergencia |
-| `giirob/pr2-A1/db/push` | Eventos de caja, paletizado y tapa clasificada |
-| `giirob/pr2-A1/db/pull` | Consultas de datos (operarios) |
+| `giirob/pr2-A1/db/push` | Eventos relacionales (caja, paletizado, tapa clasificada) → PostgreSQL |
+| `giirob/pr2-A1/db/pull` | Consultas relacionales (operarios) |
+| `giirob/pr2-A1/nosql/push` | Eventos documentales (sensores, alertas, auditoría) → MongoDB |
 
 ---
 
@@ -229,6 +232,8 @@ Ver [§5 Ciclo de logic_task](#5-ciclo-de-logic_task) para el detalle de cada it
 
 Los conteos se persisten en NVS y sobreviven reinicios.
 
+**Alertas NoSQL:** al cruzar los umbrales `TOLVA_ALERT_NEAR_LIMIT (18)` y `AMR_TOLVA_THRESHOLD (20)` se publica un documento a la colección `alertas_tolva` (`cerca_limite` y `overflow` respectivamente). Cada tipo se emite una sola vez por ciclo de llenado; el estado se reinicia tras la recogida del AMR.
+
 ---
 
 ### 2.9 Coordinación AMR
@@ -255,6 +260,8 @@ cobot_ready = true
 
 Timeout AMR: si no llega en 120 s (`AMR_TIMEOUT_SECS`), se cancelan `amr_pending_tolva`, `amr_dispatched_at` y `amr_caja`.
 
+**Trazabilidad NoSQL (`despachos_amr`):** al despachar el AMR se crea `amr_despacho_in_flight` con id_caja, tolva, color y timestamps. Al llegar al `cobot_pick` se publica el documento con `estado=completado` y la duración total; en timeout se publica con `estado=timeout`.
+
 ---
 
 ### 2.10 Coordinación Cobot
@@ -270,6 +277,8 @@ Al recibir `completed`:
 4. `cobot_in_progress` ya fue liberado al encolar el evento.
 
 Timeout Cobot: si no responde en 60 s (`COBOT_TIMEOUT_SECS`), se limpian `cobot_in_progress`, `cobot_started_at` y `cobot_pending`.
+
+**Trazabilidad NoSQL (`ciclos_cobot`):** al completar cada paletizado se publica un documento con id_pallet, id_caja, color, `duracion_segs` (calculada desde `cobot_started_at`) y `estado=completado`. En caso de timeout el documento se publica con `estado=timeout`.
 
 ---
 
@@ -288,6 +297,10 @@ Comportamiento:
 - También responde a comandos MQTT `estop`/`resume` en `emergency/action`.
 - Con `emergency_stop = true`: callback MQTT ignora comandos SCADA; `logic_task` suspende su ciclo.
 
+**Trazabilidad NoSQL (`emergencias`):** al activarse la emergencia, `emergency_task` registra `emergency_started_at` y `emergency_origin` en `ControlState`. Al resolverse, calcula la duración y deposita `emergency_event_pending`; `publish_status` lo publica como documento con `duracion_segs`, `origen` y `resuelto_por` (`boton_fisico` / `mqtt_scada`).
+
+> Los comandos SCADA recibidos durante la emergencia se registran en la colección `comandos_scada` con `resultado=rechazado_emergencia` aunque sean ignorados a nivel de lógica.
+
 Ver [§4 Ciclo de emergency_task](#4-ciclo-de-emergency_task) para el detalle de cada iteración.
 
 ---
@@ -303,7 +316,41 @@ Namespace `tolva_counts`, claves `tolva_1` a `tolva_6` como `u64`.
 
 ---
 
-### 2.13 Estado compartido (ControlState)
+### 2.13 Integración NoSQL (MongoDB)
+
+El ESP32 publica eventos documentales en `giirob/pr2-A1/nosql/push`. El bridge (servicio externo) los enruta a la colección MongoDB indicada en el campo `coleccion`.
+
+**Formato del payload:**
+```json
+{ "coleccion": "<nombre>", "data": { ...documento... } }
+```
+
+**Helper interno:** `publish_nosql_event(mqtt, coleccion, data)` en `logic_task.rs` serializa y publica al topic. Solo `logic_task` publica NoSQL (mismo invariante que el resto del sistema).
+
+**Colecciones y cuándo se publican:**
+
+| Colección | Trigger en firmware | Función |
+|---|---|---|
+| `eventos_cinta` | Spawn de tapa → `sensor=entrada`; Delta confirma → `sensor=salida` | Trazabilidad de tapas en cinta |
+| `alertas_tolva` | `tolva_counts[i]` cruza umbral (`cerca_limite` 18 / `overflow` 20) | Control de desbordamiento |
+| `despachos_amr` | AMR llega a `cobot_pick` (completado) o timeout 120 s | Trazabilidad y rendimiento del AMR |
+| `ciclos_cobot` | `cobot/status completed` o timeout 60 s | Rendimiento por ciclo de paletizado |
+| `emergencias` | Transición emergencia activa → inactiva | Historial de paradas |
+| `comandos_scada` | Cada comando recibido en `scada/action` | Auditoría de órdenes del operador |
+
+**Lógica de duplicación de alertas:** `tolva_alert_state[i]` mantiene el último nivel de alerta emitido por tolva (0=ninguna, 1=`cerca_limite`, 2=`overflow`). Se reinicia tras `reset_tolva_counts()` (recogida del AMR o reset SCADA), permitiendo emitir nuevas alertas en el siguiente ciclo de llenado.
+
+**Tracking de emergencias:** El `emergency_task` registra `emergency_started_at` y `emergency_origin` al activarse la emergencia. Al resolverse, calcula la duración y deposita `emergency_event_pending` en el estado para que `publish_status` lo publique.
+
+**Tracking de despachos AMR:** `amr_despacho_in_flight: AmrDespacho` preserva la información del despacho (id_caja, tolva, color, dispatched_at, arrived_tolva_at) desde la salida hasta la llegada al almacén o timeout — los campos `amr_dispatched_at` y `amr_arrived_at` se limpian antes de la llegada al `cobot_pick` y no se pueden usar para calcular duración total.
+
+**Mapeo de fuentes de emergencia:** valores internos `emergency_button`/`resume_button` → `boton_fisico`; el resto → `mqtt_scada` (para cumplir con el dominio NoSQL).
+
+> Los timestamps absolutos (ISODate) los añade el bridge automáticamente como `_ts_recepcion`. El firmware solo emite duraciones calculadas con `Instant`.
+
+---
+
+### 2.14 Estado compartido (ControlState)
 
 **Archivo:** `src/control_state.rs` — protegido por `Arc<Mutex<ControlState>>`.
 
@@ -334,6 +381,14 @@ Namespace `tolva_counts`, claves `tolva_1` a `tolva_6` como `u64`.
 | `batch_complete_pending` | `bool` | Lote Auto completado, pendiente de publicar |
 | `reset_db_pending` | `bool` | Reset pendiente de publicar |
 | `tapas_clasificadas_pending` | `u32` | Tapas clasificadas pendientes de publicar |
+| `tolva_alert_state` | `[u8; 6]` | Última alerta NoSQL emitida por tolva (0=ninguna, 1=cerca_limite, 2=overflow) |
+| `emergency_started_at` | `Option<Instant>` | Inicio de la emergencia activa (para calcular duración) |
+| `emergency_origin` | `Option<String>` | Origen de la emergencia activa (`boton_fisico` / `mqtt_scada`) |
+| `emergency_event_pending` | `Option<(u64, String, String)>` | Evento de emergencia resuelto pendiente de publicar a NoSQL (duracion_segs, origen, resuelto_por) |
+| `amr_despacho_in_flight` | `Option<AmrDespacho>` | Despacho del AMR en curso preservado hasta llegada al almacén (alimenta colección `despachos_amr`) |
+| `last_auto_spawn_at` | `Option<Instant>` | Marca del último spawn en modo Auto para espaciar los envíos a RoboDK (`AUTO_SPAWN_DELAY_MS`) |
+
+> **`RobotEvent::ScadaCommandLog`** — variant extra del enum de eventos que `mqtt_manager` encola tras cada comando SCADA recibido; `logic_task` lo consume y publica el documento a la colección `comandos_scada`.
 
 ---
 
@@ -417,22 +472,35 @@ Iteración N:
   │       → si Auto: auto_validated += 1 → ¿lote completo? → batch_complete_pending = true
   │       → si Manual: manual_remaining -= 1
   │       → guarda tolva_counts en NVS
+  │       → ¿cruce de umbral? → publica nosql/push (alertas_tolva)
+  │       → publica nosql/push (eventos_cinta, sensor=salida)
   │     AmrArrived { location }
-  │       → si location == cobot_pick: cobot_ready = true
-  │       → si location == tolva_X: amr_arrived_tolva = index, registra timestamp
+  │       → si location == cobot_pick:
+  │           → cobot_ready = true
+  │           → publica nosql/push (despachos_amr, estado=completado) y limpia despacho
+  │       → si location == tolva_X:
+  │           → amr_arrived_tolva = index, registra timestamp
+  │           → amr_despacho_in_flight.arrived_tolva_at = now
   │     CobotCompleted { id_pallet }
   │       → cobot_completed_event = Some(id_pallet)
   │       → cobot_in_progress = false
+  │     ScadaCommandLog { cmd, parametros, resultado }
+  │       → publica nosql/push (comandos_scada)
   │
   ├─ try_spawn_caps — genera tapas si no hay emergencia
   │     Modo AUTO y auto_spawned < auto_target:
   │       → color = get_random_color() (rotativo)
-  │       → ¿tolva[color] < umbral? → publica robodk/action {"cmd":"spawn"} → auto_spawned += 1
+  │       → ¿tolva[color] < umbral?
+  │           → publica robodk/action {"cmd":"spawn"} → auto_spawned += 1
+  │           → publica nosql/push (eventos_cinta, sensor=entrada)
   │     Modo MANUAL y manual_spawn_pending:
-  │       → ¿tolva[color] < umbral? → publica robodk/action {"cmd":"spawn"} → pending = false
+  │       → ¿tolva[color] < umbral?
+  │           → publica robodk/action {"cmd":"spawn"} → pending = false
+  │           → publica nosql/push (eventos_cinta, sensor=entrada)
   │
   ├─ handle_cobot_completed — gestiona fin de paletizado
   │     ¿cobot_completed_event.take()?
+  │       → captura cobot_started_at para calcular duración
   │       → pallets[ci].1 += 1
   │       → ¿pallet lleno (>= 6)?
   │           → query_operarios: publica db/pull, espera db/pull/response (5s, PullSlot)
@@ -442,13 +510,15 @@ Iteración N:
   │           → pallets[i].1 = 0, pallets[i].0 += 6
   │       → ¿pallet abierto?
   │           → publica db/push {"event":"caja_paletizada", estado=false}
+  │       → publica nosql/push (ciclos_cobot, estado=completado)
   │
   ├─ publish_status — toda la lógica de publicación MQTT
   │     Lee ControlState (lock) para recoger flags pendientes:
-  │       status_requested       → publica scada/status (estado completo)
-  │       batch_complete_pending → publica scada/status {"event":"batch_complete"}
-  │       reset_db_pending       → publica db/push {"event":"reset"}
-  │       tapas_clasificadas > 0 → publica db/push {"event":"tapa_clasificada"}
+  │       status_requested        → publica scada/status (estado completo)
+  │       batch_complete_pending  → publica scada/status {"event":"batch_complete"}
+  │       reset_db_pending        → publica db/push {"event":"reset"}
+  │       tapas_clasificadas > 0  → publica db/push {"event":"tapa_clasificada"}
+  │       emergency_event_pending → publica nosql/push (emergencias)
   │
   │     Lógica AMR:
   │       ¿AMR llegó a tolva y pasó el delay (6s)?
@@ -457,8 +527,10 @@ Iteración N:
   │         → tolva_counts[tolva] = 0 → guarda NVS
   │       ¿AMR libre y tolva >= umbral?
   │         → publica amr/action {"cmd":"goto", location:"TOLVA_X"}
+  │         → registra amr_despacho_in_flight para trazabilidad NoSQL
   │       ¿AMR en camino > 120s timeout?
   │         → error log → resetea amr_pending_tolva
+  │         → publica nosql/push (despachos_amr, estado=timeout)
   │
   │     Lógica cobot:
   │       ¿cobot_ready && !cobot_in_progress?
@@ -466,6 +538,7 @@ Iteración N:
   │         → cobot_in_progress = true
   │       ¿cobot en progreso > 60s timeout?
   │         → error log → resetea cobot_in_progress
+  │         → publica nosql/push (ciclos_cobot, estado=timeout)
   │
   └─ espera absoluta hasta completar 500ms → siguiente iteración
 ```
@@ -561,9 +634,12 @@ pallets[0].1++ (red)
 | `MQTT_URL` | `"mqtt://broker.hivemq.com:1883"` | Broker MQTT |
 | `MQTT_CLIENT_ID` | `"ESP32_PR2A1"` | ID del cliente MQTT |
 | `AMR_TOLVA_THRESHOLD` | `20` | Tapas para despachar AMR (1 caja llena) |
+| `TOLVA_ALERT_NEAR_LIMIT` | `18` | Umbral de alerta `cerca_limite` para la colección NoSQL `alertas_tolva` |
 | `AMR_ARRIVAL_DELAY_SECS` | `6` | Segundos de espera tras llegada del AMR a la tolva |
 | `AMR_WAREHOUSE_LOCATION` | `"cobot_pick"` | Ubicación del área del Cobot |
 | `AMR_TIMEOUT_SECS` | `120` | Timeout de espera para el AMR |
 | `PALLET_CAPACITY` | `6` | Cajas por pallet |
 | `COBOT_TIMEOUT_SECS` | `60` | Timeout de espera para el Cobot |
+| `AUTO_SPAWN_DELAY_MS` | `2000` | Tiempo mínimo entre spawns en modo Auto (ms) para no saturar a RoboDK |
 | `VALID_COLORS` | `["red","green","yellow","blue","white","orange"]` | Colores aceptados |
+| `MQTT_TOPIC_NOSQL_PUSH` | `"giirob/pr2-A1/nosql/push"` | Topic único para publicar documentos NoSQL (el bridge enruta por colección) |

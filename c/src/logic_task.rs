@@ -20,7 +20,7 @@ use std::{
 use crate::{
     config,
     mqtt_manager::{MqttManager, PullSlot},
-    control_state::{ControlState, Mode, RobotEvent},
+    control_state::{AmrDespacho, ControlState, Mode, RobotEvent},
 };
 
 //Función publica para generar un nuevo ID de tapa
@@ -54,7 +54,7 @@ pub fn spawn_logic_task<'a: 'static>(
                 }
                 //Drena los eventos del robot
                 while let Ok(event) = event_rx.try_recv() {
-                    process_robot_event(event, &control_state, &nvs);
+                    process_robot_event(event, &control_state, &nvs, &mqtt);
                 }
                 //Intenta generar tapas
                 try_spawn_caps(&mqtt, &control_state, &emergency_stop);
@@ -75,10 +75,11 @@ pub fn spawn_logic_task<'a: 'static>(
 
 
 //Función para procesar eventos provenientes del robot
-fn process_robot_event(
+fn process_robot_event<'a>(
     event: RobotEvent,
     control_state: &Arc<Mutex<ControlState>>,
     nvs: &EspDefaultNvsPartition,
+    mqtt: &Arc<Mutex<MqttManager<'a>>>,
 ) {
     //Depende del tipo de evento, actualiza el estado de control
     match event {
@@ -94,7 +95,10 @@ fn process_robot_event(
                 "blue"   => 5,
                 _ => { error!("Delta completed con color desconocido: {}", color); return; }
             };
-            
+
+            //Estado a publicar tras liberar el lock: alerta de tolva si cruzó umbral
+            let mut tolva_alert: Option<(&'static str, u64)> = None;
+
             if let Ok(mut state) = control_state.lock() {
                 //Actualiza el conteo de tapas en la tolva correspondiente y conteo total
                 state.tolva_counts[tolva_index] += 1;
@@ -120,14 +124,61 @@ fn process_robot_event(
                 if let Err(e) = state.save_tolva_counts(nvs) {
                     error!("No se pudo guardar tolvas en NVS: {:?}", e);
                 }
+
+                //NoSQL alertas_tolva: detecta cruce de umbrales y marca estado para no duplicar
+                let nivel = state.tolva_counts[tolva_index];
+                if nivel >= config::AMR_TOLVA_THRESHOLD && state.tolva_alert_state[tolva_index] < 2 {
+                    state.tolva_alert_state[tolva_index] = 2;
+                    tolva_alert = Some(("overflow", nivel));
+                } else if nivel >= config::TOLVA_ALERT_NEAR_LIMIT && state.tolva_alert_state[tolva_index] == 0 {
+                    state.tolva_alert_state[tolva_index] = 1;
+                    tolva_alert = Some(("cerca_limite", nivel));
+                }
+            }
+
+            //NoSQL eventos_cinta: sensor de salida confirma que la tapa fue clasificada correctamente
+            if let Ok(mut mqtt_guard) = mqtt.lock() {
+                publish_nosql_event(&mut mqtt_guard, "eventos_cinta", json!({
+                    "sensor":  "salida",
+                    "id_cap":  id_cap,
+                    "evento":  "deteccion"
+                }));
+
+                //NoSQL alertas_tolva: publica si hubo cruce de umbral
+                if let Some((tipo, nivel)) = tolva_alert {
+                    publish_nosql_event(&mut mqtt_guard, "alertas_tolva", json!({
+                        "tolva":        format!("TOLVA_{}", tolva_index + 1),
+                        "nivel_actual": nivel,
+                        "umbral":       config::AMR_TOLVA_THRESHOLD,
+                        "tipo":         tipo
+                    }));
+                }
             }
         }
 
         RobotEvent::AmrArrived { location } => {
-            //Si el AMR llegó al almacén, el cobot puede iniciar su tarea
+            //Si el AMR llegó al almacén, el cobot puede iniciar su tarea y se cierra el despacho
             if location.eq_ignore_ascii_case(config::AMR_WAREHOUSE_LOCATION) {
-                if let Ok(mut state) = control_state.lock() {
-                    state.cobot_ready = true;
+                let despacho = {
+                    if let Ok(mut state) = control_state.lock() {
+                        state.cobot_ready = true;
+                        state.amr_despacho_in_flight.take()
+                    } else {
+                        None
+                    }
+                };
+                //NoSQL despachos_amr: publica el ciclo completo con duración total
+                if let Some(d) = despacho {
+                    if let Ok(mut mqtt_guard) = mqtt.lock() {
+                        let duracion = d.dispatched_at.elapsed().as_secs();
+                        publish_nosql_event(&mut mqtt_guard, "despachos_amr", json!({
+                            "id_caja":             d.id_caja,
+                            "tolva":               d.tolva_label,
+                            "color":               d.color,
+                            "duracion_total_segs": duracion,
+                            "estado":              "completado"
+                        }));
+                    }
                 }
                 return;
             }
@@ -136,8 +187,13 @@ fn process_robot_event(
                 if let Ok(mut state) = control_state.lock() {
                     match state.amr_pending_tolva {
                         Some(pending) if pending == index => {
+                            let now = std::time::Instant::now();
                             state.amr_arrived_tolva = Some(index);
-                            state.amr_arrived_at    = Some(std::time::Instant::now());
+                            state.amr_arrived_at    = Some(now);
+                            //Anota la llegada a tolva en el despacho en vuelo (para despachos_amr)
+                            if let Some(d) = state.amr_despacho_in_flight.as_mut() {
+                                d.arrived_tolva_at = Some(now);
+                            }
                         }
                         Some(pending) => error!("AMR llegó a {}, esperaba tolva {}", location, pending + 1),
                         None          => error!("AMR llegó a {} sin tolva pendiente", location),
@@ -154,6 +210,17 @@ fn process_robot_event(
                 info!("Cobot completó operación en pallet {}", id_pallet);
                 state.cobot_completed_event = Some(id_pallet);
                 state.cobot_in_progress     = false;
+            }
+        }
+
+        //NoSQL comandos_scada: auditoría de comandos recibidos del SCADA
+        RobotEvent::ScadaCommandLog { cmd, parametros, resultado } => {
+            if let Ok(mut mqtt_guard) = mqtt.lock() {
+                publish_nosql_event(&mut mqtt_guard, "comandos_scada", json!({
+                    "cmd":        cmd,
+                    "parametros": parametros,
+                    "resultado":  resultado
+                }));
             }
         }
     }
@@ -181,9 +248,15 @@ fn try_spawn_caps<'a>(
     if let Ok(mut state) = control_state.try_lock() {
         //En modo auto, genera tapas hasta alcanzar el objetivo, verificando que la tolva no este llena antes del spawn.
         if state.mode == Mode::Auto && state.auto_spawned < state.auto_target {
-            let color = get_random_color();
-            let ci = color_to_index(color);
-            if state.tolva_counts[ci] < config::AMR_TOLVA_THRESHOLD {
+            //Espacia los spawns para no saturar a RoboDK: solo genera si pasó el delay mínimo desde el último
+            let delay_ok = state.last_auto_spawn_at
+                .map(|t| t.elapsed() >= Duration::from_millis(config::AUTO_SPAWN_DELAY_MS))
+                .unwrap_or(true);
+            if delay_ok {
+                //El color rotativo solo avanza cuando realmente se va a generar una tapa
+                let color = get_random_color();
+                let ci = color_to_index(color);
+                if state.tolva_counts[ci] < config::AMR_TOLVA_THRESHOLD {
                 if let Ok(mut mqtt_guard) = mqtt.try_lock() {
                     let id_cap = next_id_cap();
                     let spawn_msg = json!({
@@ -194,7 +267,15 @@ fn try_spawn_caps<'a>(
                     }).to_string();
                     //Publica el mensaje de spawn del topic robodk/action
                     mqtt_guard.publish_text(config::MQTT_TOPIC_ROBODK_ACTION, &spawn_msg);
+                    //NoSQL eventos_cinta: sensor de entrada dispara la foto virtual de clasificación
+                    publish_nosql_event(&mut mqtt_guard, "eventos_cinta", json!({
+                        "sensor": "entrada",
+                        "id_cap": id_cap,
+                        "evento": "deteccion"
+                    }));
                     state.auto_spawned += 1;
+                    state.last_auto_spawn_at = Some(std::time::Instant::now());
+                }
                 }
             }
         //En modo manual, si hay un spawn pendiente, intenta generarlo en una tolva que no este llena, sino deja el spawn pendiente.
@@ -211,6 +292,12 @@ fn try_spawn_caps<'a>(
                         "device": "ESP32-S3"
                     }).to_string();
                     mqtt_guard.publish_text(config::MQTT_TOPIC_ROBODK_ACTION, &spawn_msg);
+                    //NoSQL eventos_cinta: sensor de entrada dispara la foto virtual de clasificación
+                    publish_nosql_event(&mut mqtt_guard, "eventos_cinta", json!({
+                        "sensor": "entrada",
+                        "id_cap": id_cap,
+                        "evento": "deteccion"
+                    }));
                     state.manual_spawn_pending = false;
                 }
             } else {
@@ -234,6 +321,12 @@ fn publish_status<'a>(
     let mut batch_complete = false;
     let mut reset_db: Option<String> = None;
     let mut tapas_lote: Option<(String, u32)> = None;
+    //Despachos AMR timeout — datos para publicar en colección NoSQL despachos_amr
+    let mut amr_timeout_doc: Option<AmrDespacho> = None;
+    //Ciclos cobot timeout — datos para publicar en colección NoSQL ciclos_cobot
+    let mut cobot_timeout_doc: Option<(String, String, String, u64)> = None;
+    //Emergencia resuelta pendiente de publicar en colección NoSQL emergencias
+    let mut emergency_doc: Option<(u64, String, String)> = None;
 
     
     if let Ok(mut state) = control_state.lock() {
@@ -284,6 +377,8 @@ fn publish_status<'a>(
                     state.amr_pending_tolva = None;
                     state.amr_dispatched_at = None;
                     state.amr_caja          = None;
+                    //NoSQL despachos_amr: captura datos del despacho fallido antes de limpiarlo
+                    amr_timeout_doc = state.amr_despacho_in_flight.take();
                 }
             }
         }
@@ -320,9 +415,19 @@ fn publish_status<'a>(
             for (index, count) in state.tolva_counts.iter().enumerate() {
                 if *count >= config::AMR_TOLVA_THRESHOLD {
                     let id_caja = next_id_caja();
+                    let now     = std::time::Instant::now();
                     state.amr_caja          = Some((index, id_caja.clone()));
                     state.amr_pending_tolva = Some(index);
-                    state.amr_dispatched_at = Some(std::time::Instant::now());
+                    state.amr_dispatched_at = Some(now);
+                    //NoSQL despachos_amr: registra el despacho en vuelo hasta llegada al almacén o timeout
+                    let color = tolva_index_to_color(index).unwrap_or("red").to_string();
+                    state.amr_despacho_in_flight = Some(AmrDespacho {
+                        id_caja: id_caja.clone(),
+                        tolva_label: format!("TOLVA_{}", index + 1),
+                        color,
+                        dispatched_at: now,
+                        arrived_tolva_at: None,
+                    });
                     amr_target = Some((index, id_caja));
                     break;
                 }
@@ -334,11 +439,22 @@ fn publish_status<'a>(
             if let Some(started) = state.cobot_started_at {
                 if started.elapsed().as_secs() >= config::COBOT_TIMEOUT_SECS {
                     error!("Timeout cobot — reseteando cobot_in_progress");
+                    //NoSQL ciclos_cobot: captura datos del ciclo fallido antes de limpiar
+                    let duracion = started.elapsed().as_secs();
+                    let (color, id_caja) = state.cobot_pending.clone()
+                        .unwrap_or_else(|| ("red".to_string(), String::new()));
+                    let id_pallet = format!("P{:04}", state.pallets[color_to_index(&color)].0);
+                    cobot_timeout_doc = Some((id_pallet, id_caja, color, duracion));
                     state.cobot_in_progress = false;
                     state.cobot_started_at  = None;
                     state.cobot_pending      = None;
                 }
             }
+        }
+
+        //NoSQL emergencias: si hay un evento de emergencia ya resuelto pendiente, lo capturamos para publicar
+        if let Some(evt) = state.emergency_event_pending.take() {
+            emergency_doc = Some(evt);
         }
 
         //Si el cobot está listo y libre, inicia la siguiente tarea de paletizado
@@ -474,6 +590,38 @@ fn publish_status<'a>(
                 }).to_string();
                 mqtt_guard.publish_text(config::MQTT_TOPIC_COBOT_ACTION, &cmd_msg);
             }
+
+            //NoSQL despachos_amr: publica el despacho fallido por timeout
+            if let Some(d) = amr_timeout_doc {
+                let duracion = d.dispatched_at.elapsed().as_secs();
+                publish_nosql_event(&mut mqtt_guard, "despachos_amr", json!({
+                    "id_caja":             d.id_caja,
+                    "tolva":               d.tolva_label,
+                    "color":               d.color,
+                    "duracion_total_segs": duracion,
+                    "estado":              "timeout"
+                }));
+            }
+
+            //NoSQL ciclos_cobot: publica el ciclo fallido por timeout
+            if let Some((id_pallet, id_caja, color, duracion)) = cobot_timeout_doc {
+                publish_nosql_event(&mut mqtt_guard, "ciclos_cobot", json!({
+                    "id_pallet":     id_pallet,
+                    "id_caja":       id_caja,
+                    "color":         color,
+                    "duracion_segs": duracion,
+                    "estado":        "timeout"
+                }));
+            }
+
+            //NoSQL emergencias: publica el evento de parada completo (duración, origen, resuelto_por)
+            if let Some((duracion, origen, resuelto_por)) = emergency_doc {
+                publish_nosql_event(&mut mqtt_guard, "emergencias", json!({
+                    "duracion_segs": duracion,
+                    "origen":        origen,
+                    "resuelto_por":  resuelto_por
+                }));
+            }
         }
     }
 }
@@ -496,11 +644,13 @@ fn handle_cobot_completed<'a>(
     if event.is_none() { return; }
 
     //Actualiza el pallet correspondiente al color de la caja paletizada e incrementa el contador
-    let (id_caja, id_color, id_pallet, pallet_full) = {
+    let (id_caja, id_color, id_pallet, pallet_full, duracion_segs) = {
         if let Ok(mut state) = control_state.try_lock() {
             let (id_color, id_caja) = state.cobot_pending.take()
                 .unwrap_or_else(|| ("red".to_string(), String::new()));
-            state.cobot_started_at = None;
+            //Captura el inicio antes de limpiarlo para calcular duración del ciclo (NoSQL ciclos_cobot)
+            let started_at = state.cobot_started_at.take();
+            let duracion = started_at.map(|t| t.elapsed().as_secs()).unwrap_or(0);
             let ci = color_to_index(&id_color);
             state.pallets[ci].1 += 1;
             let count     = state.pallets[ci].1;
@@ -512,7 +662,7 @@ fn handle_cobot_completed<'a>(
                 state.pallets[ci].0 += 6;
                 state.pallets[ci].1  = 0;
             }
-            (id_caja, id_color, id_pallet, full)
+            (id_caja, id_color, id_pallet, full, duracion)
         } else {
             return;
         }
@@ -540,6 +690,17 @@ fn handle_cobot_completed<'a>(
             mqtt_guard.publish_text(config::MQTT_TOPIC_SCADA_STATUS, &msg);
         }
         info!("Pallet {} ({}) cerrado y notificado al SCADA", id_pallet, id_color);
+    }
+
+    //NoSQL ciclos_cobot: registra el ciclo de paletizado completado con su duración
+    if let Ok(mut mqtt_guard) = mqtt.try_lock() {
+        publish_nosql_event(&mut mqtt_guard, "ciclos_cobot", json!({
+            "id_pallet":     id_pallet,
+            "id_caja":       id_caja,
+            "color":         id_color,
+            "duracion_segs": duracion_segs,
+            "estado":        "completado"
+        }));
     }
 }
 
@@ -662,4 +823,13 @@ fn next_etiqueta() -> String {
     static COUNTER: AtomicUsize = AtomicUsize::new(1);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("ETQ{:07}", id)
+}
+
+//Helper genérico para publicar un evento en la colección NoSQL indicada (vía topic nosql/push)
+fn publish_nosql_event(mqtt_guard: &mut MqttManager<'_>, coleccion: &str, data: serde_json::Value) {
+    let msg = json!({
+        "coleccion": coleccion,
+        "data":      data,
+    }).to_string();
+    mqtt_guard.publish_text(config::MQTT_TOPIC_NOSQL_PUSH, &msg);
 }

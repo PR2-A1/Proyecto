@@ -18,7 +18,15 @@ use std::{
 };
 
 //Modulos internos del proyecto
-use crate::{config, mqtt_manager::MqttManager};
+use crate::{config, control_state::ControlState, mqtt_manager::MqttManager};
+
+//Mapea el source interno (botones / MQTT) a los valores admitidos por la colección NoSQL emergencias
+fn map_source_to_nosql(source: &str) -> &'static str {
+    match source {
+        "emergency_button" | "resume_button" => "boton_fisico",
+        _ => "mqtt_scada",
+    }
+}
 
 //Función publica para ejecutar la tarea de emergencia, encargada de monitorear los botones, controlar el led y buzzer y notificar a través de MQTT
 pub fn run_emergency_task<'a>(
@@ -28,6 +36,7 @@ pub fn run_emergency_task<'a>(
     led_pin: Gpio10,
     buzzer_pin: Gpio48,
     emergency_stop: Arc<AtomicBool>,
+    control_state: Arc<Mutex<ControlState>>,
 ) -> Result<()> {
     //Declaración de pines y variables para el manejo de la emergencia
     let mut emergency_button = PinDriver::input(emergency_pin, Pull::Up)?;
@@ -86,8 +95,23 @@ pub fn run_emergency_task<'a>(
                 let _ = buzzer.set_low();
             }
 
+            let source = pending_source.unwrap_or("mqtt_action");
+            let nosql_source = map_source_to_nosql(source);
+
+            //NoSQL emergencias: registra inicio o resolución de la emergencia en el estado compartido
+            if let Ok(mut state) = control_state.lock() {
+                if current_state {
+                    state.emergency_started_at = Some(std::time::Instant::now());
+                    state.emergency_origin     = Some(nosql_source.to_string());
+                } else if let (Some(started_at), Some(origin)) =
+                    (state.emergency_started_at.take(), state.emergency_origin.take())
+                {
+                    let duracion = started_at.elapsed().as_secs();
+                    state.emergency_event_pending = Some((duracion, origin, nosql_source.to_string()));
+                }
+            }
+
             if let Ok(mut mqtt_guard) = mqtt.lock() {
-                let source = pending_source.unwrap_or("mqtt_action");
                 let status = if current_state { "emergency_active" } else { "emergency_inactive" };
                 let payload = json!({
                     "status": status,

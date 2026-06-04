@@ -76,130 +76,157 @@ impl<'a> MqttManager<'a> {
                 match topic_recibido {
                     //Si el mensaje es del topic SCADA/ACTION
                     config::MQTT_TOPIC_SCADA_ACTION => {
-                        //Si existe una emergencia activa, se ignoran los mensajes recibidos por el scada
-                        if emergency_stop.load(Ordering::SeqCst) {
-                            info!("Sistema en emergencia, ignorando comando SCADA");
-                            return;
-                        }
-                        //Se muestra en Log el mensaje recibido
-                        info!("SCADA ordena: {}", mensaje);
-                        //Se deserializa el mensaje JSON para procesar el contenido del mismo.
-                        if let Ok(value) = serde_json::from_str::<Value>(mensaje) {
-                            //Extrae el campo "cmd" del mensaje, que es comando. Si no existe o no  es texto, devuelve cadena vacía.
-                            let cmd = value.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
-                            //Si es un comando status, se marca en el estado de control que se ha solicitado un status
-                            if cmd.eq_ignore_ascii_case("status") {
-                                if let Ok(mut state) = control_state.try_lock() {
-                                    state.status_requested = true;
-                                } else {
-                                    error!("No se pudo lockear control_state para status");
-                                }
-                                return;
+                        //Se parsea el JSON una vez para extraer cmd, parametros (sin el campo cmd) y luego procesar
+                        let parsed = serde_json::from_str::<Value>(mensaje).ok();
+                        let cmd_str = parsed.as_ref()
+                            .and_then(|v| v.get("cmd"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let parametros = parsed.as_ref().map(|v| {
+                            let mut p = v.clone();
+                            if let Some(obj) = p.as_object_mut() { obj.remove("cmd"); }
+                            p
+                        }).unwrap_or_else(|| serde_json::json!({}));
+
+                        //Procesa el comando dentro de un bloque etiquetado para poder auditarlo en NoSQL después
+                        let resultado: &str = 'process: {
+                            //Si existe una emergencia activa, se ignoran los mensajes recibidos por el scada
+                            if emergency_stop.load(Ordering::SeqCst) {
+                                info!("Sistema en emergencia, ignorando comando SCADA");
+                                break 'process "rechazado_emergencia";
                             }
-                            //Si es un comando set_mode, se extrae el modo deseado y se actualiza el estado de control con el nuevo modo.
-                            if cmd.eq_ignore_ascii_case("set_mode") {
-                                let mode_str = value.get("mode")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
-
-                                if let Ok(mut state) = control_state.try_lock() {
-                                    if mode_str.eq_ignore_ascii_case("AUTO") {
-                                        info!("Activando modo AUTO");
-                                        state.mode = Mode::Auto;
-                                        state.id_lote = None;
-                                    } else if mode_str.eq_ignore_ascii_case("MANUAL") {
-                                        info!("Activando modo MANUAL");
-                                        state.mode = Mode::Manual;
-                                        state.id_lote = None;
-                                    }
-                                } else {
-                                    error!("No se pudo lockear control_state para set_mode");
-                                }
-                                return;
-                            }
-
-                            //Si es un comando gen, extrae la cantidad de tapas a generar, el id_lote y el color(en modo manual) y se actualiza el estado de control
-                            if cmd.eq_ignore_ascii_case("gen") {
-                                let quantity = value.get("quantity")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0) as u32;
-                                let id_lote = value
-                                    .get("id_lote")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
-
-                                
-                                if let Ok(mut state) = control_state.try_lock() {
-                                    //Si el id_lote es una cadena vacía, se asigna None, sino se asigna el valor del id_lote a lote_value
-                                    let lote_value = if id_lote.is_empty() {
-                                        None
+                            //Se muestra en Log el mensaje recibido
+                            info!("SCADA ordena: {}", mensaje);
+                            //Se deserializa el mensaje JSON para procesar el contenido del mismo.
+                            if let Some(value) = parsed.as_ref() {
+                                let cmd = cmd_str.as_str();
+                                //Si es un comando status, se marca en el estado de control que se ha solicitado un status
+                                if cmd.eq_ignore_ascii_case("status") {
+                                    if let Ok(mut state) = control_state.try_lock() {
+                                        state.status_requested = true;
                                     } else {
-                                        Some(id_lote.to_string())
-                                    };
+                                        error!("No se pudo lockear control_state para status");
+                                    }
+                                    break 'process "ok";
+                                }
+                                //Si es un comando set_mode, se extrae el modo deseado y se actualiza el estado de control con el nuevo modo.
+                                if cmd.eq_ignore_ascii_case("set_mode") {
+                                    let mode_str = value.get("mode")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
 
-                                    //Si el modo es Auto, se actualiza el estado de control con la cantidad de tapas a generar
-                                    if state.mode == Mode::Auto {
-                                        info!("Generando lote AUTO de {} tapas", quantity);
-                                        state.auto_target = quantity;
+                                    if let Ok(mut state) = control_state.try_lock() {
+                                        if mode_str.eq_ignore_ascii_case("AUTO") {
+                                            info!("Activando modo AUTO");
+                                            state.mode = Mode::Auto;
+                                            state.id_lote = None;
+                                        } else if mode_str.eq_ignore_ascii_case("MANUAL") {
+                                            info!("Activando modo MANUAL");
+                                            state.mode = Mode::Manual;
+                                            state.id_lote = None;
+                                        }
+                                    } else {
+                                        error!("No se pudo lockear control_state para set_mode");
+                                    }
+                                    break 'process "ok";
+                                }
+
+                                //Si es un comando gen, extrae la cantidad de tapas a generar, el id_lote y el color(en modo manual) y se actualiza el estado de control
+                                if cmd.eq_ignore_ascii_case("gen") {
+                                    let quantity = value.get("quantity")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(0) as u32;
+                                    let id_lote = value
+                                        .get("id_lote")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+
+
+                                    if let Ok(mut state) = control_state.try_lock() {
+                                        //Si el id_lote es una cadena vacía, se asigna None, sino se asigna el valor del id_lote a lote_value
+                                        let lote_value = if id_lote.is_empty() {
+                                            None
+                                        } else {
+                                            Some(id_lote.to_string())
+                                        };
+
+                                        //Si el modo es Auto, se actualiza el estado de control con la cantidad de tapas a generar
+                                        if state.mode == Mode::Auto {
+                                            info!("Generando lote AUTO de {} tapas", quantity);
+                                            state.auto_target = quantity;
+                                            state.auto_spawned = 0;
+                                            state.auto_validated = 0;
+                                            state.id_lote = lote_value;
+                                        //Si el modo es manual se extrae el color del mensaje, se valida y luego se actualiza el estado del control
+                                        } else if state.mode == Mode::Manual {
+                                            let color_str = value.get("color")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("red");
+
+                                            if !config::VALID_COLORS.contains(&color_str) {
+                                                error!("Color inválido recibido: {}", color_str);
+                                                break 'process "ok";
+                                            }
+
+                                            info!("Generando MANUAL: color={}, cantidad=1", color_str);
+                                            state.manual_remaining = 1;
+                                            state.manual_color = color_str.to_string();
+                                            state.manual_spawn_pending = true;
+                                            if state.id_lote.is_none() {
+                                                state.id_lote = lote_value;
+                                            }
+                                        }
+                                    } else {
+                                        error!("No se pudo lockear control_state para gen");
+                                    }
+                                    break 'process "ok";
+                                }
+                                //Si es un comando reset, se resetean las tolvas y parámetros de estado de control.
+                                if cmd.eq_ignore_ascii_case("reset") {
+                                    info!("SCADA ordenó reset de tolvas");
+                                    if let Ok(mut state) = control_state.try_lock() {
+                                        state.reset_tolva_counts();
+                                        state.pallets           = [(1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0)];
+                                        state.amr_pending_tolva = None;
+                                        state.amr_dispatched_at = None;
+                                        state.amr_arrived_tolva = None;
+                                        state.amr_arrived_at    = None;
+                                        state.amr_caja          = None;
+                                        state.cobot_ready       = false;
+                                        state.cobot_in_progress = false;
+                                        state.cobot_pending     = None;
+                                        state.cobot_completed_event = None;
+                                        state.total_processed = 0;
+                                        state.tapas_clasificadas_pending = 0;
+                                        state.auto_target = 0;
                                         state.auto_spawned = 0;
                                         state.auto_validated = 0;
-                                        state.id_lote = lote_value;
-                                    //Si el modo es manual se extrae el color del mensaje, se valida y luego se actualiza el estado del control
-                                    } else if state.mode == Mode::Manual {
-                                        let color_str = value.get("color")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("red");
+                                        state.id_lote = None;
+                                        state.reset_db_pending = true;
 
-                                        if !config::VALID_COLORS.contains(&color_str) {
-                                            error!("Color inválido recibido: {}", color_str);
-                                            return;
+                                        if let Err(err) = state.save_tolva_counts(&nvs) {
+                                            error!("No se pudo guardar tolvas en NVS tras reset: {:?}", err);
+                                        } else {
+                                            info!("Tolvas reseteadas y guardadas en NVS");
                                         }
-                                        
-                                        info!("Generando MANUAL: color={}, cantidad=1", color_str);
-                                        state.manual_remaining = 1;
-                                        state.manual_color = color_str.to_string();
-                                        state.manual_spawn_pending = true;
-                                        if state.id_lote.is_none() {
-                                            state.id_lote = lote_value;
-                                        }
-                                    }
-                                } else {
-                                    error!("No se pudo lockear control_state para gen");
-                                }
-                                return;
-                            }
-                            //Si es un comando reset, se resetean las tolvas y parámetros de estado de control.
-                            if cmd.eq_ignore_ascii_case("reset") {
-                                info!("SCADA ordenó reset de tolvas");
-                                if let Ok(mut state) = control_state.try_lock() {
-                                    state.reset_tolva_counts();
-                                    state.pallets           = [(1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0)];
-                                    state.amr_pending_tolva = None;
-                                    state.amr_dispatched_at = None;
-                                    state.amr_arrived_tolva = None;
-                                    state.amr_arrived_at    = None;
-                                    state.amr_caja          = None;
-                                    state.cobot_ready       = false;
-                                    state.cobot_in_progress = false;
-                                    state.cobot_pending     = None;
-                                    state.cobot_completed_event = None;
-                                    state.total_processed = 0;
-                                    state.tapas_clasificadas_pending = 0;
-                                    state.auto_target = 0;
-                                    state.auto_spawned = 0;
-                                    state.auto_validated = 0;
-                                    state.id_lote = None;
-                                    state.reset_db_pending = true;
-
-                                    if let Err(err) = state.save_tolva_counts(&nvs) {
-                                        error!("No se pudo guardar tolvas en NVS tras reset: {:?}", err);
                                     } else {
-                                        info!("Tolvas reseteadas y guardadas en NVS");
+                                        error!("No se pudo lockear control_state para reset tolvas");
                                     }
-                                } else {
-                                    error!("No se pudo lockear control_state para reset tolvas");
+                                    break 'process "ok";
                                 }
-                                return;
+                            }
+                            "ok"
+                        };
+
+                        //NoSQL comandos_scada: encola evento de auditoría para que logic_task lo publique en MongoDB
+                        if !cmd_str.is_empty() {
+                            if let Err(e) = event_tx.try_send(RobotEvent::ScadaCommandLog {
+                                cmd: cmd_str,
+                                parametros,
+                                resultado: resultado.to_string(),
+                            }) {
+                                error!("Cola llena — scada/action log descartado: {:?}", e);
                             }
                         }
                     }
