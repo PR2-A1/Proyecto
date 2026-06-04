@@ -1,0 +1,11 @@
+# Artefactos de compilación Rust
+d/esp32/target/
+d/bridge/target/
+d/mqtt_db_bridge/target/
+c/target/
+
+# Entorno Python
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
