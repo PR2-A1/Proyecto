@@ -1,0 +1,308 @@
+from robodk import robolink    # RoboDK API
+from robodk import robomath    # Robot toolbox
+from robolink import *
+import math, json, time
+import config
+RDK = robolink.Robolink()
+
+#NAMES CONFIGURATION
+EXTERNAL_AXIS_NAME = 'Gudel TMF-2'
+COBOT_NAME = 'ABB CRB 15000 10'
+TOOL_NAME = 'SMC ZXP7A01-ZP25C-X1 Vacuum Gripper'
+ZONE_1_NAME = 'zona_paletizado_1'
+ZONE_2_NAME = 'zona_paletizado_2'
+ZONE_3_NAME = 'zona_paletizado_3'
+PICK_ZONE_NAME = 'zona_pick'
+EMPTY_BOX_PICK_ZONE_NAME = 'zona_pick_caja_vacia'
+EXTERNAL_AXIS_BASE_NAME = 'Gudel TMF-2 Base'
+COBOT_BASE = 'ABB CRB 15000 10 Base'
+PLACE_FRAME_NAME = 'frame_place_cobot'
+PRE_PLACE_NAME = 'pre_place_cobot'
+PLACE_NAME = 'place_cobot'
+POST_PLACE_NAME = 'post_place_cobot'
+PICK_FRAME_NAME = 'frame_pick_cobot'
+PRE_PICK_NAME = 'pre_pick_cobot'
+PICK_NAME = 'pick_cobot'
+POST_PICK_NAME = 'post_pick_cobot'
+HOME_COBOT_TARGET_NAME = 'home_cobot'
+TEMPLATE_BOX_NAME = 'caja_template'
+STATION_FRAME_NAME = 'frame_spawn_objetos'
+
+#OBJECTS DEFINITION
+external_axis = RDK.Item(EXTERNAL_AXIS_NAME, ITEM_TYPE_ROBOT)
+cobot = RDK.Item(COBOT_NAME, ITEM_TYPE_ROBOT)
+tool = RDK.Item(TOOL_NAME, ITEM_TYPE_TOOL)
+template_box = RDK.Item(TEMPLATE_BOX_NAME, ITEM_TYPE_OBJECT)
+
+#TARGETS DEFINITION
+#EXTERNAL AXIS TARGETS
+zone_1 = RDK.Item(ZONE_1_NAME, ITEM_TYPE_TARGET)
+zone_2 = RDK.Item(ZONE_2_NAME, ITEM_TYPE_TARGET)
+zone_3 = RDK.Item(ZONE_3_NAME, ITEM_TYPE_TARGET)
+pick_zone = RDK.Item(PICK_ZONE_NAME, ITEM_TYPE_TARGET)
+empty_box_pick_zone = RDK.Item(EMPTY_BOX_PICK_ZONE_NAME, ITEM_TYPE_TARGET)
+#COBOT TARGETS
+pre_place_target = RDK.Item(PRE_PLACE_NAME, ITEM_TYPE_TARGET)
+place_target = RDK.Item(PLACE_NAME, ITEM_TYPE_TARGET)
+post_place_target = RDK.Item(POST_PLACE_NAME, ITEM_TYPE_TARGET)
+pre_pick_target = RDK.Item(PRE_PICK_NAME, ITEM_TYPE_TARGET)
+pick_target = RDK.Item(PICK_NAME, ITEM_TYPE_TARGET)
+post_pick_target = RDK.Item(POST_PICK_NAME, ITEM_TYPE_TARGET)
+home_cobot = RDK.Item(HOME_COBOT_TARGET_NAME, ITEM_TYPE_TARGET)
+
+#REFERENCE FRAMES DEFINITION
+external_axis_base = RDK.Item(EXTERNAL_AXIS_BASE_NAME, ITEM_TYPE_FRAME)
+cobot_base = RDK.Item(COBOT_BASE, ITEM_TYPE_FRAME)
+place_frame = RDK.Item(PLACE_FRAME_NAME, ITEM_TYPE_FRAME)
+pick_frame = RDK.Item(PICK_FRAME_NAME, ITEM_TYPE_FRAME)
+station_frame = RDK.Item(STATION_FRAME_NAME, ITEM_TYPE_FRAME)
+
+#EXTERNAL VARIABLES
+box_offset = 760.0
+z_offset = 166.094
+box_width = 482.723
+box_height = 321.516
+
+current_box = None #BOX CURRENTLY ATTACHED TO THE TOOL
+
+left_place_frame_pose = robomath.Mat([
+	[ 0.0, 1.0,  0.0,   170.0],
+	[ 0.0, 0.0, -1.0,  -960.0],
+	[-1.0, 0.0,  0.0,     0.0],
+	[ 0.0, 0.0,  0.0,     1.0]
+])
+
+right_place_frame_pose = robomath.Mat([
+	[ 0.0, -1.0, 0.0,  170.0],
+	[ 0.0,  0.0, 1.0, -960.0],
+	[-1.0,  0.0, 0.0,    0.0],
+	[ 0.0,  0.0, 0.0,    1.0]
+])
+
+full_box_pick_frame_pose = robomath.Mat([
+	[ 0.0, 0.0, 1.0, 907.827],
+	[ 0.0, 1.0, 0.0,   3.926],
+	[-1.0, 0.0, 0.0,  91.208],
+	[ 0.0, 0.0, 0.0,     1.0]
+])
+
+
+empty_box_pick_frame_pose = robomath.Mat([
+	[ 0.0,  0.0, -1.0, -862.173],
+	[ 0.0, -1.0, -0.0,    3.926],
+	[-1.0,  0.0, -0.0, -166.094],
+	[ 0.0,  0.0,  0.0,      1.0]
+])
+
+def emergency_stop():
+	cobot.Stop()
+	external_axis.Stop()
+	
+def reset_emergency_stop():
+	cobot.setPoseFrame(cobot_base)
+	cobot.MoveJ(home_cobot, blocking = False)
+	item = tool.DetachClosest()
+	item.Delete()
+	external_axis.MoveL(pick_zone, blocking = False)
+
+#MAIN FUNCTION CALLED VIA mqtt_controller
+def palletizing_cycle(mqttc, payload):
+	pallet_id = payload.get("id_pallet", 0)
+	color     = payload.get("color", "").lower()
+	location  = payload.get("location", "")
+	iteration = payload.get("boxes_stacked", 0)
+	
+	spawn_empty_box()
+	external_axis.MoveL(pick_zone)
+	pick()
+	cobot.MoveJ(home_cobot)
+	
+	if color == "red" or color == "white":
+		place(zone_1, color, iteration)
+	elif color == "green" or color == "orange":
+		place(zone_2, color, iteration)
+	elif color == "blue" or color == "yellow":
+		place(zone_3, color, iteration)
+		
+	reload_empty_box()
+	
+	publish_finished(mqttc, pallet_id)
+
+
+def place(palletizing_zone, color, box_iteration):
+	external_axis.MoveL(palletizing_zone)
+	direction = 0
+	
+	if color == 'red' or color == 'green' or color == 'blue':
+		place_frame.setPose(right_place_frame_pose)
+		direction = 1
+	if color == 'yellow' or color == 'orange' or color == 'white':
+		place_frame.setPose(left_place_frame_pose)
+		direction = -1
+	
+	x = 170.0 #FIXED POSITION FOR THE X AXIS
+	y = direction * (box_offset + (box_width * int(box_iteration % 2)))
+	z = box_height * int((box_iteration - 1)/ 2) - z_offset
+	place_frame_pose = place_frame.Pose()
+	place_frame_pose.setPos([x, y, z])
+	place_frame.setPose(place_frame_pose)
+	
+	#PALETIZING CYCLE
+	cobot.setPoseFrame(place_frame)
+
+	#pre_place_target IS A JOINT TARGET: MoveJ TO THE ITEM IGNORES place_frame AND ALWAYS GOES TO THE RIGHT SIDE.
+	#MOVING TO ITS CARTESIAN POSE FOLLOWS THE FRAME ON BOTH SIDES.
+	cobot.MoveJ(pre_place_target.Pose())
+	cobot.MoveL(place_target)
+
+	tool.DetachAll()
+
+	global current_box
+	if current_box is not None and current_box.Valid():
+		try:
+			current_box.setName('caja_paletizada') #MARK AS PALLETIZED SO IT IS NOT PICKED AGAIN
+		except Exception:
+			pass #THE BOX WAS DELETED BY ANOTHER PROGRAM
+	current_box = None
+
+	cobot.MoveL(post_place_target)
+	
+	cobot.setPoseFrame(cobot_base)
+	cobot.MoveJ(home_cobot)
+	
+def tool_tcp_pose_abs():
+	return cobot_base.PoseAbs() * cobot.SolveFK(cobot.Joints()) * tool.PoseTool()
+
+def find_closest_box():
+	"""Find the closest pickable box: visible, not a template/pallet, not palletized and not held by another tool."""
+	tcp_pos = tool_tcp_pose_abs().Pos()
+	closest = None
+	closest_dist = -1.0
+	for obj in RDK.ItemList(ITEM_TYPE_OBJECT):
+		try:
+			name = obj.Name().lower()
+			if 'caja' not in name or 'template' in name or 'pallet' in name or 'paletizada' in name:
+				continue
+			if not obj.Visible():
+				continue
+			parent = obj.Parent()
+			if parent.Valid() and parent.Type() == ITEM_TYPE_TOOL:
+				continue
+			pos = obj.PoseAbs().Pos()
+		except Exception:
+			continue #ANOTHER PROGRAM DELETED THIS ITEM WHILE ITERATING (E.G. CAPS), SKIP IT
+		dist = math.sqrt((pos[0] - tcp_pos[0]) ** 2 + (pos[1] - tcp_pos[1]) ** 2 + (pos[2] - tcp_pos[2]) ** 2)
+		if closest is None or dist < closest_dist:
+			closest = obj
+			closest_dist = dist
+	return closest
+
+def snap_pose_to_tool(box, tcp_abs):
+	"""Pose of the box (wrt the TCP) that leaves it centered against the vacuum cup."""
+	rel = robomath.invH(tcp_abs) * box.PoseAbs()
+	#ALIGN EACH BOX AXIS WITH THE CLOSEST TOOL AXIS (KEEPS THE BOX SQUARE UNDER THE CUP)
+	cols = []
+	used = []
+	for j in range(2):
+		i = next(i for i in sorted(range(3), key=lambda i: -abs(rel[i, j])) if i not in used)
+		used.append(i)
+		col = [0.0, 0.0, 0.0]
+		col[i] = 1.0 if rel[i, j] >= 0 else -1.0
+		cols.append(col)
+	cols.append([
+		cols[0][1] * cols[1][2] - cols[0][2] * cols[1][1],
+		cols[0][2] * cols[1][0] - cols[0][0] * cols[1][2],
+		cols[0][0] * cols[1][1] - cols[0][1] * cols[1][0],
+	])
+	#PLACE THE BOX CENTERED ON THE CUP AXIS WITH ITS NEAREST FACE TOUCHING THE TCP
+	pos = [0.0, 0.0, 0.0]
+	try:
+		bbox = box.setParam('BoundingBox')
+		inv_box = robomath.invH(box.PoseAbs())
+		corners_tcp = []
+		for cx in (bbox['min'][0], bbox['max'][0]):
+			for cy in (bbox['min'][1], bbox['max'][1]):
+				for cz in (bbox['min'][2], bbox['max'][2]):
+					local = [inv_box[k, 0] * cx + inv_box[k, 1] * cy + inv_box[k, 2] * cz + inv_box[k, 3] for k in range(3)]
+					corners_tcp.append([cols[0][k] * local[0] + cols[1][k] * local[1] + cols[2][k] * local[2] for k in range(3)])
+		xs = [c[0] for c in corners_tcp]
+		ys = [c[1] for c in corners_tcp]
+		zs = [c[2] for c in corners_tcp]
+		pos = [-(min(xs) + max(xs)) / 2.0, -(min(ys) + max(ys)) / 2.0, -min(zs)]
+	except Exception:
+		pass #IF THE BOUNDING BOX IS NOT AVAILABLE, LEAVE THE BOX ORIGIN ON THE TCP
+	return robomath.Mat([
+		[cols[0][0], cols[1][0], cols[2][0], pos[0]],
+		[cols[0][1], cols[1][1], cols[2][1], pos[1]],
+		[cols[0][2], cols[1][2], cols[2][2], pos[2]],
+		[0.0, 0.0, 0.0, 1.0],
+	])
+
+def attach_box():
+	"""Attach the closest box to the tool regardless of the distance, snapped to the vacuum cup."""
+	global current_box
+	current_box = None
+	for _ in range(3):
+		box = find_closest_box()
+		if box is None:
+			print('WARNING: no box available to pick')
+			return
+		try:
+			tcp_abs = tool_tcp_pose_abs()
+			snap = snap_pose_to_tool(box, tcp_abs)
+			box.setParentStatic(tool)
+			box.setPoseAbs(tcp_abs * snap)
+			current_box = box
+			return
+		except Exception:
+			continue #THE BOX WAS DELETED MEANWHILE, RETRY WITH THE NEXT CLOSEST
+	print('WARNING: could not attach a box')
+
+def pick():
+	cobot.setPoseFrame(pick_frame)
+
+	cobot.MoveJ(pre_pick_target)
+	time.sleep(0.005)
+	cobot.MoveL(pick_target)
+	time.sleep(0.005)
+	attach_box() #ATTACH THE CLOSEST BOX REGARDLESS OF THE DISTANCE
+	time.sleep(0.005)
+	cobot.MoveL(post_pick_target)
+	time.sleep(0.005)
+
+def place_empty_box():
+	cobot.setPoseFrame(pick_frame)
+	
+	cobot.MoveJ(pre_pick_target)
+	time.sleep(0.005)
+	cobot.MoveL(pick_target)
+	time.sleep(0.005)
+	
+	tool.DetachAll()
+	time.sleep(0.005)
+	cobot.MoveL(post_pick_target)
+	time.sleep(0.005)
+	cobot.MoveJ(home_cobot)
+	
+def spawn_empty_box():
+	template_box.Copy()
+	empty_box = template_box.Paste()
+	empty_box.setName('caja_vacia')
+	empty_box.setParentStatic(station_frame)
+	empty_box.setPoseAbs(robomath.transl(7049.384, 35.618, 115.618) * robomath.rotx(math.pi / 2))
+	empty_box.setVisible(True)
+
+def reload_empty_box():
+	external_axis.MoveL(empty_box_pick_zone)
+	time.sleep(0.005)
+	pick_frame.setPose(empty_box_pick_frame_pose)
+	pick()
+	cobot.MoveJ(home_cobot)
+	pick_frame.setPose(full_box_pick_frame_pose)
+	external_axis.MoveL(pick_zone)
+	time.sleep(0.005)
+	place_empty_box()
+
+def publish_finished(mqttc, pallet_id: int):
+    msg = json.dumps({"status": "COMPLETED", "id_pallet": pallet_id})
+    mqttc.publish(config.TOPIC_COBOT_STATUS, msg, qos=config.MQTT_QOS)
