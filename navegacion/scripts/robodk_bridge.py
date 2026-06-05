@@ -67,13 +67,13 @@ class AMRState(Enum):
 # AMR's memory for the locations of the different stations (dictionary).
 # Locations sent by the ESP32: TOLVA_# and COBOT_PICK. They are random for now
 STATION_TARGETS = {
-    'TOLVA_1': (-5.3875, -0.5251),
-    'TOLVA_2': (-3.7087, 0.581),
-    'TOLVA_3': (-5.3875, -0.5251),
-    'TOLVA_4': (-5.3875, 0.581),
-    'TOLVA_5': (-4.4581, 0.581),
-    'TOLVA_6': (-3.782, -0.5251),
-    'COBOT_PICK': (-0.116087, -0.0583, -90.0),
+    'TOLVA_1': (-5.3875, -0.6251, -90.0, -0.65),
+    'TOLVA_2': (-3.7087, 0.681, -90.0, 0.65),
+    'TOLVA_3': (-5.3875, -0.6251, -90.0, -0.65),
+    'TOLVA_4': (-5.3875, 0.681, -90.0, 0.65),
+    'TOLVA_5': (-4.4581, 0.681, -90.0, 0.65),
+    'TOLVA_6': (-3.782, -0.6251, -90.0, -0.65),
+    'COBOT_PICK': (-0.156087, -0.0583, -90.0),
 }
 
 # Fixed yaw (radians) applied to every dispatched goal until the ESP32
@@ -277,7 +277,12 @@ class RoboDKBridge(Node):
             self.get_logger().error(
                 f'Unknown target "{target_name}". Known: {list(STATION_TARGETS)}')
             return False
-        if len(coords) == 3:
+        if len(coords) == 4:
+            sx, sy, yaw_deg, approach_dist = coords
+            yaw = math.radians(yaw_deg)
+            x = sx - math.cos(yaw) * approach_dist
+            y = sy - math.sin(yaw) * approach_dist
+        elif len(coords) == 3:
             x, y, yaw_deg = coords
             yaw = math.radians(yaw_deg)
         else:

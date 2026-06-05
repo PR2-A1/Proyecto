@@ -55,7 +55,7 @@ ros2 launch mir_nav2_robodk bringup.launch.py
 ```
 
 > ¿No usaste el instalador o cambiaste código? Recompila antes con
-> `colcon build --packages-select mir_nav2_robodk`
+> `colcon build --packages-select mir_nav2_robodk`.
 
 ### Apagar piezas concretas
 

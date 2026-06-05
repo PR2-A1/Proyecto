@@ -159,14 +159,15 @@ identification logic is in).
 ### 5.2 Digital twin in RoboDK
 
 At `twin_update_rate` Hz (30 Hz by default) the bridge looks up
-`global_frame → robot_frame` on TF, converts to mm/degrees and writes
-onto the `robot_item_name` in RoboDK:
+`global_frame → robot_frame` on TF, converts to mm/radians and writes
+onto the `robot_item_name` in RoboDK with `setPose(...)`.
 
-- If the item is `ITEM_TYPE_ROBOT` (mobile robot mechanism):
-  `setJoints([x_mm, y_mm, 0, yaw_deg])`.
-  > For now this is unused, the frame of the robot is used instead of the robot type.
-
-- Anything else (a frame, etc.): `setPoseAbs(...)`.
+The pose is applied with `setPose` (relative to the twin frame's
+**parent**), not `setPoseAbs`, because the TF pose is expressed in the
+`map` frame. The twin frame must therefore hang from a parent reference
+frame placed where the `map` origin is inside the RoboDK station; that
+parent acts as the `map → station` calibration. `setJoints` is avoided
+because it behaved badly on the mobile-robot mechanism.
 
 If `freeze_yaw=true` the yaw is forced to `0°`. 
 
